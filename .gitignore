@@ -1,0 +1,10 @@
+3rdparty/
+node_modules/
+dist/
+release/
+.DS_Store
+*.log
+docs/
+CLAUDE.md
+.vscode/
+.opencode/

@@ -1,0 +1,155 @@
+:root {
+  /* Brand */
+  --color-primary: #FF6B35;
+  --color-primary-hover: #E85A28;
+  --color-primary-light: rgba(255, 107, 53, 0.15);
+
+  /* Surfaces */
+  --color-bg: #0A0A0A;
+  --color-bg-secondary: #141414;
+  --color-bg-tertiary: #1E1E1E;
+  --color-bg-card: #1A1A1A;
+  --color-bg-hover: #252525;
+  --color-bg-active: #2A2A2A;
+
+  /* Text */
+  --color-text: #F0F0F0;
+  --color-text-secondary: #999999;
+  --color-text-tertiary: #666666;
+  --color-text-inverse: #000000;
+
+  /* Borders */
+  --color-border: #2A2A2A;
+  --color-border-light: #333333;
+
+  /* Status */
+  --color-success: #22C55E;
+  --color-warning: #F59E0B;
+  --color-error: #EF4444;
+  --color-info: #3B82F6;
+
+  /* Spacing */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  --spacing-2xl: 32px;
+
+  /* Sizing */
+  --sidebar-width: 64px;
+  --sidebar-width-expanded: 200px;
+  --titlebar-height: 32px;
+  --statusbar-height: 36px;
+  --bottombar-height: 40px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  /* Font */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 28px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  /* Transition */
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+
+  /* Chat */
+  --chat-bubble-user-bg: var(--color-primary);
+  --chat-bubble-user-text: #fff;
+  --chat-bubble-ai-bg: var(--color-bg-secondary);
+  --chat-bubble-ai-text: var(--color-text);
+  --chat-bubble-radius: 16px;
+  --chat-input-bg: var(--color-bg-secondary);
+  --chat-input-border: var(--color-border);
+  --chat-input-border-focus: var(--color-primary);
+  --chat-session-width: 240px;
+  --chat-session-bg: var(--color-bg-secondary);
+  --chat-code-bg: #1e1e2e;
+  --chat-typing-cursor: var(--color-primary);
+  --chat-tool-card-bg: var(--color-bg-tertiary);
+  --chat-tool-card-border: var(--color-border-light);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-family);
+  font-size: var(--font-size-md);
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-light);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-tertiary);
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+input, textarea, select {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--color-text);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+input:focus, textarea:focus, select:focus {
+  border-color: var(--color-primary);
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}

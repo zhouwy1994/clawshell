@@ -1,0 +1,62 @@
+appId: com.clawshell.desktop
+productName: ClawShell
+copyright: Copyright © 2026 ClawShell
+directories:
+  output: release
+files:
+  - dist/**/*
+  - electron/**/*
+  - src/**/*
+  - assets/**/*
+  - node_modules/**/*
+  - "!node_modules/**/*.md"
+  - "!node_modules/**/CHANGELOG*"
+  - "!node_modules/**/test/**"
+  - "!node_modules/**/tests/**"
+  - "!node_modules/**/.cache"
+asar: false
+extraResources:
+  - from: resources/runtime/node-${platform}-${arch}
+    to: resources/runtime/node-${platform}-${arch}
+mac:
+  category: public.app-category.productivity
+  icon: assets/images/logo/clawshell_logo.png
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+dmg:
+  title: ClawShell
+  icon: assets/images/logo/clawshell_logo.png
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  icon: assets/icon.ico
+nsis:
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
+  installerHeaderIcon: assets/icon.ico
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: ClawShell
+linux:
+  target:
+    - AppImage
+  icon: assets/images/logo/clawshell_logo.png
+  category: Utility
