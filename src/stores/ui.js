@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
 export const useUiStore = defineStore('ui', () => {
-  const theme = ref('dark')
+  const theme = ref('light')
   const language = ref('zh-CN')
   const sidebarExpanded = ref(false)
   const currentRoute = ref('chat')
@@ -24,7 +24,7 @@ export const useUiStore = defineStore('ui', () => {
 
   // Initialize theme from document attribute
   function init() {
-    const saved = document.documentElement.getAttribute('data-theme') || 'dark'
+    const saved = document.documentElement.getAttribute('data-theme') || 'light'
     setTheme(saved)
   }
 

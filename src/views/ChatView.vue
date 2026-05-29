@@ -118,7 +118,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { useConfigStore } from '@/stores/config'
 import { useGatewayStore } from '@/stores/gateway'
@@ -209,30 +209,44 @@ watch(
 )
 
 let listenersInitialized = false
+let stopConnectedWatch = null
+let cleanupChatListeners = null
 
 async function initChat() {
   if (!gatewayStore.ready) return
 
   configStore.load()
-  chatStore.initEventListeners()
+  cleanupChatListeners = chatStore.initEventListeners()
   listenersInitialized = true
-  await chatStore.connectToGateway()
 
-  // 等 WS 连接就绪后加载 agents、models、sessions
-  const unwatch = watch(() => gw.connected.value, async (connected) => {
-    if (connected) {
-      await chatStore.loadAgents()
-      await chatStore.loadModels()
-      await chatStore.loadSessions()
-      // 如果已有会话，切换到最近的；否则创建新会话
-      if (chatStore.sessions.length > 0) {
-        await chatStore.switchSession(chatStore.sessions[0].key)
-      } else {
-        await chatStore.createSession()
-      }
-      unwatch()
+  // Only connect if not already connected (same gateway params)
+  if (!gw.connected.value) {
+    await chatStore.connectToGateway()
+  }
+
+  // Load data once connected
+  const loadData = async () => {
+    await chatStore.loadAgents()
+    await chatStore.loadModels()
+    await chatStore.loadSessions()
+    if (chatStore.sessions.length > 0) {
+      await chatStore.switchSession(chatStore.sessions[0].key)
+    } else {
+      await chatStore.createSession()
     }
-  }, { immediate: true })
+  }
+
+  if (gw.connected.value) {
+    await loadData()
+  } else {
+    stopConnectedWatch = watch(() => gw.connected.value, async (isConnected) => {
+      if (isConnected) {
+        await loadData()
+        stopConnectedWatch?.()
+        stopConnectedWatch = null
+      }
+    })
+  }
 }
 
 onMounted(async () => {
@@ -245,6 +259,14 @@ watch(() => gatewayStore.ready, (ready) => {
   if (ready && !listenersInitialized) {
     initChat()
   }
+})
+
+onUnmounted(() => {
+  stopConnectedWatch?.()
+  stopConnectedWatch = null
+  cleanupChatListeners?.()
+  cleanupChatListeners = null
+  listenersInitialized = false
 })
 </script>
 

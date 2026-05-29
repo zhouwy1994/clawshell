@@ -82,7 +82,7 @@ const uiStore = useUiStore()
 
 const currentRoute = computed(() => route.name)
 const showLayout = computed(() => {
-  return !['loading'].includes(route.name)
+  return !['loading', 'setup'].includes(route.name)
 })
 
 function handleNavigate(routeName) {
@@ -123,7 +123,9 @@ onMounted(async () => {
     gatewayStore.ready = data.ready
     if (data.ready) {
       gatewayStore.status = 'ready'
-      gatewayStore.port = data.port
+      gatewayStore.port = data.port || 0
+      gatewayStore.mode = data.mode || 'local'
+      gatewayStore.remoteUrl = data.remoteUrl || ''
       gatewayStore.restarting = false
     } else {
       gatewayStore.status = 'disconnected'
@@ -132,7 +134,9 @@ onMounted(async () => {
 
   ipc.onGatewayRestarted((data) => {
     gatewayStore.ready = data.ready
-    gatewayStore.port = data.port
+    gatewayStore.port = data.port || 0
+    gatewayStore.mode = data.mode || 'local'
+    gatewayStore.remoteUrl = data.remoteUrl || ''
     gatewayStore.status = 'ready'
     gatewayStore.restarting = false
   })
@@ -153,6 +157,11 @@ onMounted(async () => {
   if (settings?.ui?.theme) uiStore.setTheme(settings.ui.theme)
 
   // Route based on state
+  if (!gatewayStore.setupDone) {
+    router.replace({ name: 'setup' })
+    return
+  }
+
   if (gatewayStore.ready) {
     if (!gatewayStore.hasModel) {
       router.replace({ name: 'setup' })
@@ -161,20 +170,19 @@ onMounted(async () => {
     }
   }
 
-  // Continue polling while not ready
+  // Poll only when setup is done but gateway isn't ready yet
   pollingTimer = setInterval(async () => {
-    if (!gatewayStore.ready) {
-      await gatewayStore.refresh()
-      if (gatewayStore.ready) {
-        await configStore.load()
-        if (!gatewayStore.hasModel) {
-          router.replace({ name: 'setup' })
-        } else {
-          router.replace({ name: 'chat' })
-        }
+    if (gatewayStore.ready) return
+    await gatewayStore.refresh()
+    if (gatewayStore.ready) {
+      await configStore.load()
+      if (!gatewayStore.hasModel) {
+        router.replace({ name: 'setup' })
+      } else {
+        router.replace({ name: 'chat' })
       }
     }
-  }, 2000)
+  }, 3000)
 })
 
 onUnmounted(() => {

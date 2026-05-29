@@ -86,6 +86,7 @@ function formatJson(data) {
 
 .tool-code {
   background: var(--chat-code-bg);
+  color: var(--color-text);
   padding: 8px 12px;
   border-radius: var(--radius-sm);
   font-family: 'Cascadia Code', 'Fira Code', monospace;

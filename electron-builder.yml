@@ -15,14 +15,19 @@ files:
   - "!node_modules/**/tests/**"
   - "!node_modules/**/.cache"
 asar: false
-extraResources:
-  - from: resources/runtime/node-${platform}-${arch}
-    to: resources/runtime/node-${platform}-${arch}
 mac:
   category: public.app-category.productivity
   icon: assets/images/logo/clawshell_logo.png
   target:
     - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+    - target: tar.gz
       arch:
         - arm64
         - x64
@@ -44,6 +49,9 @@ win:
     - target: portable
       arch:
         - x64
+    - target: msi
+      arch:
+        - x64
   icon: assets/icon.ico
 nsis:
   oneClick: true
@@ -58,5 +66,8 @@ nsis:
 linux:
   target:
     - AppImage
+    - deb
+    - rpm
   icon: assets/images/logo/clawshell_logo.png
   category: Utility
+  maintainer: ClawShell <zhouwy113@gmail.com>

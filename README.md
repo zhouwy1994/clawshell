@@ -19,7 +19,7 @@
 
 ---
 
-## 🇨🇳 中文
+## 中文
 
 ### 介绍
 
@@ -29,9 +29,12 @@ ClawShell（虾壳）是一款基于 [OpenClaw](https://www.npmjs.com/package/op
 
 - **智能对话** — 支持 Markdown 渲染、流式输出、工具调用展示、语音输入与朗读
 - **模型配置** — 支持国内主流 AI 模型（DeepSeek、Kimi、MiniMax 等），三步完成配置
-- **助手管理** — 创建自定义 AI 助手，设定性格、身份和说话风格，内置 11 种预设模板
+- **助手管理** — 创建自定义 AI 助手，设定性格、身份和说话风格，内置多种预设模板
 - **渠道接入** — 接入 QQ、微信、飞书、钉钉、Telegram、Discord 等国内国际主流 10+ 即时通讯平台
 - **技能商店** — 浏览和安装 AI 技能插件，拓展 AI 助手的能力边界
+- **定时任务** — 可视化 Cron 编辑器，轻松创建和管理 AI 助手的定时任务
+- **双模网关** — 支持本地启动和远程连接两种模式，灵活对接 OpenClaw 网关
+- **核心管理** — OpenClaw 核心版本安装、切换、升级与删除，多版本共存
 - **深色/浅色主题** — 精心设计的双主题界面，珊瑚橙品牌色
 - **中英双语** — 完整的国际化支持
 - **一键修复** — 内置自动诊断与修复工具
@@ -39,6 +42,22 @@ ClawShell（虾壳）是一款基于 [OpenClaw](https://www.npmjs.com/package/op
 ### 🖼 界面截图
 
 <table>
+<tr>
+    <td align="center"><b>启动引导-连接方式</b></td>
+    <td align="center"><b>启动引导-模型配置</b></td>
+  </tr>
+  <tr>
+    <td><img src="assets/images/readme/guide.png" alt="Chat" width="480" /></td>
+    <td><img src="assets/images/readme/guide_model.png" alt="Models" width="480" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>启动引导-1号员工</b></td>
+    <td align="center"><b>启动引导-启动网关</b></td>
+  </tr>
+  <tr>
+    <td><img src="assets/images/readme/guide_assistants.png" alt="Chat" width="480" /></td>
+    <td><img src="assets/images/readme/guide_start.png" alt="Models" width="480" /></td>
+  </tr>
   <tr>
     <td align="center"><b>智能对话</b></td>
     <td align="center"><b>模型配置</b></td>
@@ -62,6 +81,14 @@ ClawShell（虾壳）是一款基于 [OpenClaw](https://www.npmjs.com/package/op
   <tr>
     <td><img src="assets/images/readme/skills.png" alt="Skills" width="480" /></td>
     <td><img src="assets/images/readme/settings.png" alt="Settings" width="480" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>OpenClaw 核心管理</b></td>
+    <td align="center"><b>深色主题</b></td>
+  </tr>
+  <tr>
+    <td><img src="assets/images/readme/settings_upgrade_core.png" alt="Skills" width="480" /></td>
+    <td><img src="assets/images/readme/dark_theme.png" alt="Settings" width="480" /></td>
   </tr>
 </table>
 
@@ -144,7 +171,7 @@ clawshell/
 
 ---
 
-## 🇬🇧 English
+## English
 
 ### Introduction
 
@@ -157,6 +184,9 @@ ClawShell is a desktop AI assistant client built on the [OpenClaw](https://www.n
 - **Assistant Management** — Create custom AI assistants with unique personalities; 11 built-in templates
 - **Channel Integration** — Connect to 10+ messaging platforms: QQ, WeChat, Feishu, DingTalk, Telegram, Discord, Slack, and more
 - **Skill Store** — Browse and install AI skill plugins to extend assistant capabilities
+- **Scheduled Jobs** — Visual Cron editor to create and manage AI assistant scheduled tasks with ease
+- **Dual-Mode Gateway** — Support both local spawn and remote connection to OpenClaw gateway
+- **Core Management** — Install, switch, upgrade, and delete OpenClaw core versions with multi-version coexistence
 - **Dark/Light Themes** — Polished dual-theme UI with coral orange brand color
 - **Bilingual** — Full i18n support (Chinese & English)
 - **One-Click Repair** — Built-in diagnostics and auto-repair
@@ -164,6 +194,22 @@ ClawShell is a desktop AI assistant client built on the [OpenClaw](https://www.n
 ### 🖼 Screenshots
 
 <table>
+<tr>
+    <td align="center"><b>Startup Guide - Connection Type</b></td>
+    <td align="center"><b>Startup Guide - Model Configuration</b></td>
+  </tr>
+  <tr>
+    <td><img src="assets/images/readme/guide_en.png" alt="Chat" width="480" /></td>
+    <td><img src="assets/images/readme/guide_model_en.png" alt="Models" width="480" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Startup Guide - First Assistants</b></td>
+    <td align="center"><b>Startup Guide - Gateway Start</b></td>
+  </tr>
+  <tr>
+    <td><img src="assets/images/readme/guide_assistants_en.png" alt="Chat" width="480" /></td>
+    <td><img src="assets/images/readme/guide_start_en.png" alt="Models" width="480" /></td>
+  </tr>
   <tr>
     <td align="center"><b>Chat</b></td>
     <td align="center"><b>Models</b></td>
@@ -187,6 +233,14 @@ ClawShell is a desktop AI assistant client built on the [OpenClaw](https://www.n
   <tr>
     <td><img src="assets/images/readme/skills_en.png" alt="Skills" width="480" /></td>
     <td><img src="assets/images/readme/settings_en.png" alt="Settings" width="480" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>OpenClaw Core Management</b></td>
+    <td align="center"><b>Dark Theme</b></td>
+  </tr>
+  <tr>
+    <td><img src="assets/images/readme/settings_upgrade_core_en.png" alt="Skills" width="480" /></td>
+    <td><img src="assets/images/readme/dark_theme_en.png" alt="Settings" width="480" /></td>
   </tr>
 </table>
 

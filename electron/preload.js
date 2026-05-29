@@ -34,10 +34,10 @@ contextBridge.exposeInMainWorld('clawshell', {
   fetchSkillSubcategories: (l1Id) => ipcRenderer.invoke('fetch-skill-subcategories', l1Id),
   fetchSkills: (params) => ipcRenderer.invoke('fetch-skills', params),
   searchSkills: (params) => ipcRenderer.invoke('search-skills', params),
-  installSkill: (slug) => ipcRenderer.invoke('install-skill', slug),
-  uninstallSkill: (slug) => ipcRenderer.invoke('uninstall-skill', slug),
-  listInstalledSkills: () => ipcRenderer.invoke('list-installed-skills'),
-  readSkillFile: (slug, filename) => ipcRenderer.invoke('read-skill-file', slug, filename),
+  installSkill: (slug, target) => ipcRenderer.invoke('install-skill', slug, target),
+  uninstallSkill: (slug, target) => ipcRenderer.invoke('uninstall-skill', slug, target),
+  listInstalledSkills: (target) => ipcRenderer.invoke('list-installed-skills', target),
+  readSkillFile: (slug, filename, target) => ipcRenderer.invoke('read-skill-file', slug, filename, target),
 
   // ── 模型供应商 API ──
   fetchProviderModels: (baseUrl, apiKey) => ipcRenderer.invoke('fetch-provider-models', baseUrl, apiKey),
@@ -66,6 +66,27 @@ contextBridge.exposeInMainWorld('clawshell', {
   openLogsDir: () => ipcRenderer.invoke('open-logs-dir'),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
+
+  // ── OpenClaw 核心版本管理 ──
+  hasOpenClawCore: () => ipcRenderer.invoke('has-openclaw-core'),
+  installOpenClawCore: (version) => ipcRenderer.invoke('install-openclaw-core', version),
+  listOpenClawVersions: () => ipcRenderer.invoke('list-openclaw-versions'),
+  switchOpenClawVersion: (version) => ipcRenderer.invoke('switch-openclaw-version', version),
+  deleteOpenClawVersion: (version) => ipcRenderer.invoke('delete-openclaw-version', version),
+  upgradeOpenClaw: (version) => ipcRenderer.invoke('upgrade-openclaw', version),
+  getOpenClawAvailableVersions: () => ipcRenderer.invoke('get-openclaw-available-versions'),
+
+  onCoreInstallProgress: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('core-install-progress', handler);
+    return () => ipcRenderer.removeListener('core-install-progress', handler);
+  },
+
+  // ── 连接模式 ──
+  saveConnection: (connection) => ipcRenderer.invoke('save-connection', connection),
+  setupComplete: () => ipcRenderer.invoke('setup-complete'),
+  saveAgentWorkspace: (agentData) => ipcRenderer.invoke('save-agent-workspace', agentData),
+
   getSystemInfo: () => ipcRenderer.invoke('get-system-info'),
 
   // ── 窗口控制 ──

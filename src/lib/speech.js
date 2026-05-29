@@ -8,6 +8,34 @@
 
 let mediaRecorder = null
 let audioChunks = []
+let recordingStartedAt = 0
+
+function logSpeechDebug(stage, payload = {}) {
+  console.debug(`[speech] ${stage}`, payload)
+}
+
+function pickRecordingMimeType() {
+  const audio = typeof document !== 'undefined' ? document.createElement('audio') : null
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/mp4',
+  ]
+
+  for (const candidate of candidates) {
+    if (!MediaRecorder.isTypeSupported(candidate)) continue
+    if (!audio) return candidate
+    const playable = audio.canPlayType(candidate)
+    if (playable === 'probably' || playable === 'maybe') return candidate
+  }
+
+  for (const candidate of candidates) {
+    if (MediaRecorder.isTypeSupported(candidate)) return candidate
+  }
+
+  return ''
+}
 
 export function isRecordingSupported() {
   return !!(navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined')
@@ -18,41 +46,101 @@ export function startRecording(callbacks) {
 
   navigator.mediaDevices.getUserMedia({ audio: true })
     .then(stream => {
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm'
+      const mimeType = pickRecordingMimeType()
+      logSpeechDebug('getUserMedia.success', {
+        requestedMimeType: mimeType || '(browser default)',
+        trackCount: stream.getTracks().length,
+        trackSettings: stream.getAudioTracks().map(track => track.getSettings?.() || {}),
+      })
 
-      mediaRecorder = new MediaRecorder(stream, { mimeType })
+      mediaRecorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream)
+      const recorder = mediaRecorder
       audioChunks = []
+      logSpeechDebug('recorder.created', {
+        mimeType: recorder.mimeType || mimeType || '(unknown)',
+        state: recorder.state,
+      })
 
-      mediaRecorder.onstart = () => callbacks.onStart?.()
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunks.push(e.data)
+      recorder.onstart = () => {
+        recordingStartedAt = Date.now()
+        logSpeechDebug('recorder.start', {
+          mimeType: recorder.mimeType || mimeType || '(unknown)',
+          state: recorder.state,
+        })
+        callbacks.onStart?.()
       }
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(audioChunks, { type: mimeType })
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunks.push(e.data)
+        logSpeechDebug('recorder.chunk', {
+          chunkSize: e.data?.size || 0,
+          chunkType: e.data?.type || '(unknown)',
+          chunkCount: audioChunks.length,
+        })
+      }
+      recorder.onstop = () => {
+        const actualMimeType = audioChunks[0]?.type || recorder.mimeType || mimeType || 'audio/webm'
+        const blob = new Blob(audioChunks, { type: actualMimeType })
+        const durationSeconds = Math.max(1, Math.ceil((Date.now() - recordingStartedAt) / 1000))
+        logSpeechDebug('recorder.stop', {
+          actualMimeType,
+          chunkCount: audioChunks.length,
+          chunkSizes: audioChunks.map(chunk => chunk.size),
+          blobSize: blob.size,
+          durationSeconds,
+        })
+        if (blob.size === 0) {
+          callbacks.onError?.('Recording is empty')
+          stream.getTracks().forEach(t => t.stop())
+          mediaRecorder = null
+          audioChunks = []
+          recordingStartedAt = 0
+          callbacks.onEnd?.()
+          return
+        }
         const reader = new FileReader()
         reader.onload = () => {
           const dataUrl = reader.result
-          callbacks.onComplete?.(dataUrl, mimeType)
+          logSpeechDebug('reader.complete', {
+            actualMimeType,
+            dataUrlLength: typeof dataUrl === 'string' ? dataUrl.length : 0,
+          })
+          callbacks.onComplete?.({
+            blob,
+            dataUrl,
+            mimeType: actualMimeType,
+            playbackUrl: URL.createObjectURL(blob),
+            durationSeconds,
+          })
         }
         reader.readAsDataURL(blob)
         // Release microphone
         stream.getTracks().forEach(t => t.stop())
         mediaRecorder = null
         audioChunks = []
+        recordingStartedAt = 0
         callbacks.onEnd?.()
       }
-      mediaRecorder.onerror = () => {
+      recorder.onerror = () => {
+        logSpeechDebug('recorder.error', {
+          state: recorder.state,
+        })
         callbacks.onError?.('Recording failed')
         stream.getTracks().forEach(t => t.stop())
         mediaRecorder = null
         audioChunks = []
+        recordingStartedAt = 0
         callbacks.onEnd?.()
       }
-      mediaRecorder.start()
+      // Request periodic chunks so quick stop actions still produce audio data.
+      recorder.start(250)
     })
     .catch(err => {
+      logSpeechDebug('getUserMedia.error', {
+        name: err?.name,
+        message: err?.message,
+      })
       callbacks.onError?.(err.name === 'NotAllowedError' ? 'Microphone permission denied' : 'Could not access microphone')
     })
   return true
@@ -60,6 +148,11 @@ export function startRecording(callbacks) {
 
 export function stopRecording() {
   if (mediaRecorder && mediaRecorder.state === 'recording') {
+    logSpeechDebug('recorder.stop.requested', {
+      state: mediaRecorder.state,
+      mimeType: mediaRecorder.mimeType || '(unknown)',
+    })
+    try { mediaRecorder.requestData() } catch {}
     mediaRecorder.stop()
   }
 }

@@ -138,6 +138,42 @@
           <div v-if="toast.show && toast.key === 'chat'" class="toast toast-success">{{ toast.msg }}</div>
         </div>
 
+        <!-- Registry -->
+        <div v-if="activeTab === 'registry'" class="settings-section">
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.registry.npm') }}</label>
+            <div class="radio-group">
+              <label
+                v-for="preset in NPM_REGISTRY_PRESETS"
+                :key="preset.url"
+                class="radio-item"
+                :class="{ active: registryMode === 'preset' && npmRegistry === preset.url }"
+              >
+                <input
+                  type="radio"
+                  :value="preset.url"
+                  v-model="npmRegistry"
+                  @change="registryMode = 'preset'"
+                />
+                {{ t(preset.label) }}
+              </label>
+              <label class="radio-item" :class="{ active: registryMode === 'custom' }">
+                <input type="radio" value="custom" v-model="registryMode" />
+                {{ t('settings.registry.custom') }}
+              </label>
+            </div>
+          </div>
+          <div v-if="registryMode === 'custom'" class="section-block">
+            <input v-model="customRegistry" type="text" placeholder="https://registry.example.com" class="section-input" />
+          </div>
+          <div class="section-block">
+            <p class="registry-active-hint">{{ t('settings.registry.currentActive') }}: {{ npmRegistry }}</p>
+            <p class="registry-hint-sub">{{ t('settings.registry.npmHint') }}</p>
+          </div>
+          <button class="btn btn-primary section-btn" @click="saveRegistry">{{ t('common.save') }}</button>
+          <div v-if="toast.show && toast.key === 'registry'" class="toast toast-success">{{ toast.msg }}</div>
+        </div>
+
         <!-- Gateway -->
         <div v-if="activeTab === 'gateway'" class="settings-section">
           <div class="section-block">
@@ -207,42 +243,77 @@
               </div>
             </div>
           </div>
-      
           <div class="section-block about-utils">
             <div class="about-utils-row">
-              <button class="btn btn-secondary about-action-btn" @click="openDataDir">
-                <span class="btn-icon" v-html="getIcon('file', 16)"></span>
-                <span>{{ t('settings.about.openDataDir') }}</span>
-              </button>
-              <button class="btn btn-secondary about-action-btn" @click="exportOpenclawJson">
-                <span class="btn-icon" v-html="getIcon('arrow-square-up', 16)"></span>
-                <span>{{ t('settings.about.exportConfig') }}</span>
-              </button>
+              <div class="about-utils-label">
+                <span class="version-icon" v-html="getIcon('file', 16)"></span>
+                <span class="version-name">{{ t('settings.gateway.dataDir') }}</span>
+              </div>
+              <span class="version-value data-dir-text">{{ dataDirDisplay }}</span>
             </div>
-            <div class="about-utils-row">
-              <button class="btn btn-secondary about-action-btn" @click="importOpenclawJson">
-                <span class="btn-icon" v-html="getIcon('package', 16)"></span>
-                <span>{{ t('settings.about.importConfig') }}</span>
+          </div>
+          <div class="section-block">
+            <div class="about-update-actions">
+              <button class="btn btn-primary about-action-btn" :disabled="updateState === 'checking'" @click="checkUpdate">
+                <span class="btn-icon" v-html="getIcon('arrows-clockwise', 16)"></span>
+                <span>{{ updateState === 'checking' ? t('settings.about.checking') : t('settings.about.checkUpdate') }}</span>
+              </button>
+              <button class="btn btn-secondary about-action-btn" :disabled="upgradeState === 'upgrading'" @click="showUpgradeDialog">
+                <span class="btn-icon" v-html="getIcon('rocket-launch', 16)"></span>
+                <span>{{ upgradeState === 'upgrading' ? t('settings.about.upgrading') : t('settings.about.upgradeCore') }}</span>
               </button>
               <button class="btn btn-secondary about-action-btn" @click="openContact">
                 <span class="btn-icon" v-html="getIcon('info', 16)"></span>
                 <span>{{ t('settings.about.docs') }}</span>
               </button>
             </div>
-                <div class="section-block">
-            <div class="about-update-actions">
-              <button class="btn btn-primary about-action-btn" :disabled="updateState === 'checking'" @click="checkUpdate">
-                <span class="btn-icon" v-html="getIcon('arrows-clockwise', 16)"></span>
-                <span>{{ updateState === 'checking' ? t('settings.about.checking') : t('settings.about.checkUpdate') }}</span>
-              </button>
-              <button class="btn btn-secondary about-action-btn" :disabled="upgradeState === 'upgrading'" @click="upgradeCore">
-                <span class="btn-icon" v-html="getIcon('rocket-launch', 16)"></span>
-                <span>{{ upgradeState === 'upgrading' ? t('settings.about.upgrading') : t('settings.about.upgradeCore') }}</span>
-              </button>
-            </div>
             <p v-if="updateMsg" class="about-status-msg" :class="updateState">{{ updateMsg }}</p>
             <p v-if="upgradeMsg" class="about-status-msg" :class="upgradeState">{{ upgradeMsg }}</p>
           </div>
+
+          <!-- Upgrade Version Selection Dialog -->
+          <div v-if="upgradeDialogVisible" class="upgrade-dialog-overlay" @click.self="upgradeDialogVisible = false">
+            <div class="upgrade-dialog">
+              <h3 class="upgrade-dialog-title">{{ t('settings.about.selectVersion') }}</h3>
+              <p v-if="versionsLoading" class="upgrade-dialog-loading">{{ t('settings.about.loadingVersions') }}</p>
+              <template v-else>
+                <div v-if="availableVersions.length === 0" class="upgrade-dialog-empty">{{ t('settings.about.noVersions') }}</div>
+                <div v-else class="upgrade-version-cards">
+                  <div
+                    v-for="v in availableVersions"
+                    :key="v"
+                    class="version-card"
+                    :class="{ current: v === openclawVersion }"
+                  >
+                    <div class="version-card-info">
+                      <span class="version-card-text">{{ v }}</span>
+                      <span v-if="v === openclawVersion" class="version-current-tag">{{ t('settings.about.currentVersion') }}</span>
+                      <span v-else-if="installedVersions.includes(v)" class="version-installed-tag">{{ t('settings.about.installed') }}</span>
+                    </div>
+                    <div class="version-card-action">
+                      <template v-if="v === openclawVersion">
+                        <span class="version-card-status current">{{ t('settings.about.currentVersion') }}</span>
+                      </template>
+                      <template v-else-if="installedVersions.includes(v)">
+                        <button class="btn btn-secondary version-card-btn" @click="switchToVersion(v)">{{ t('settings.about.switchVersion') }}</button>
+                      </template>
+                      <template v-else-if="downloadingVersion === v">
+                        <div class="version-card-spinner">
+                          <div class="mini-spinner"></div>
+                          <span class="downloading-text">{{ t('settings.about.downloading') }}</span>
+                        </div>
+                      </template>
+                      <template v-else>
+                        <button class="btn btn-primary version-card-btn" @click="downloadVersion(v)">{{ t('settings.about.download') }}</button>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+                <div class="upgrade-dialog-footer">
+                  <button class="btn btn-secondary" @click="upgradeDialogVisible = false">{{ t('common.cancel') }}</button>
+                </div>
+              </template>
+            </div>
           </div>
         </div>
       </div>
@@ -337,8 +408,22 @@ const defaultAssistant = ref('')
 const autoStart = ref(false)
 const startupTimeout = ref(120)
 
+// Registry
+const NPM_REGISTRY_PRESETS = [
+  { label: 'settings.registry.presets.official', url: 'https://registry.npmjs.org' },
+  { label: 'settings.registry.presets.taobao', url: 'https://registry.npmmirror.com' },
+  { label: 'settings.registry.presets.tencent', url: 'https://mirrors.tencent.com/npm/' },
+  { label: 'settings.registry.presets.huawei', url: 'https://repo.huaweicloud.com/repository/npm/' },
+]
+const npmRegistry = ref('https://registry.npmmirror.com')
+const customRegistry = ref('')
+const registryMode = ref('preset')
+
+// Data directory (read-only, from CLAWSHELL_HOME env)
+const dataDirDisplay = ref('')
+
 // Avatars
-const AVATAR_URLS = import.meta.glob('/assets/images/avatars/avatar*.png', { eager: true, query: '?url', import: 'default' })
+const AVATAR_URLS = import.meta.glob('../../assets/images/avatars/avatar*.png', { eager: true, query: '?url', import: 'default' })
 const AVATAR_SRC_LIST = Object.entries(AVATAR_URLS)
   .sort(([a], [b]) => {
     const na = parseInt(a.match(/avatar(\d+)\.png/)?.[1] || '0')
@@ -374,6 +459,7 @@ const tabs = [
   { key: 'profile', icon: '👤', label: 'settings.tab.profile' },
   { key: 'appearance', icon: '🎨', label: 'settings.tab.appearance' },
   { key: 'chat', icon: '💬', label: 'settings.tab.chat' },
+  { key: 'registry', icon: '📦', label: 'settings.tab.registry' },
   { key: 'gateway', icon: '⚡', label: 'settings.tab.gateway' },
   { key: 'about', icon: 'ℹ️', label: 'settings.tab.about' },
 ]
@@ -417,6 +503,7 @@ async function loadSystemInfo() {
     if (sysInfo.openclawVersion) openclawVersion.value = sysInfo.openclawVersion
     if (sysInfo.osInfo) osInfo.value = sysInfo.osInfo
     if (sysInfo.electronVersion) electronVersion.value = sysInfo.electronVersion
+    if (sysInfo.dataDir) dataDirDisplay.value = sysInfo.dataDir
   } catch {}
 }
 
@@ -447,6 +534,14 @@ async function loadSettings() {
   const gw = settings.gateway || {}
   autoStart.value = gw.autoStart || false
   startupTimeout.value = gw.startupTimeout || 120
+
+  const reg = settings.registry || {}
+  npmRegistry.value = reg.npm || 'https://registry.npmmirror.com'
+  const isPreset = NPM_REGISTRY_PRESETS.some(p => p.url === npmRegistry.value)
+  registryMode.value = isPreset ? 'preset' : 'custom'
+  if (!isPreset) customRegistry.value = npmRegistry.value
+
+  // dataDir is now read-only from CLAWSHELL_HOME env, populated via getSystemInfo
 }
 
 async function saveSettingsPatch(patch) {
@@ -485,6 +580,15 @@ async function saveChat() {
     chat: { sendKey: sendKey.value, defaultAssistant: defaultAssistant.value },
   })
   showToast(t('common.saveSuccess'), 'chat')
+}
+
+async function saveRegistry() {
+  const url = registryMode.value === 'custom' ? customRegistry.value : npmRegistry.value
+  await saveSettingsPatch({
+    registry: { npm: url },
+  })
+  npmRegistry.value = url
+  showToast(t('common.saveSuccess'), 'registry')
 }
 
 async function handleRestart() {
@@ -530,6 +634,11 @@ const updateState = ref('idle')
 const updateMsg = ref('')
 const upgradeState = ref('idle')
 const upgradeMsg = ref('')
+const upgradeDialogVisible = ref(false)
+const availableVersions = ref([])
+const installedVersions = ref([])
+const versionsLoading = ref(false)
+const downloadingVersion = ref('')
 
 async function checkUpdate() {
   updateState.value = 'checking'
@@ -549,6 +658,74 @@ async function checkUpdate() {
   }
 }
 
+async function showUpgradeDialog() {
+  upgradeDialogVisible.value = true
+  downloadingVersion.value = ''
+  versionsLoading.value = true
+  availableVersions.value = []
+  try {
+    const [availResult, installedList] = await Promise.all([
+      ipc.getOpenClawAvailableVersions(),
+      ipc.listOpenClawVersions(),
+    ])
+    console.log('[SettingsView] getOpenClawAvailableVersions result:', JSON.stringify(availResult))
+    console.log('[SettingsView] listOpenClawVersions result:', JSON.stringify(installedList))
+    installedVersions.value = (installedList || []).map(v => typeof v === 'string' ? v : v.version || v.dir)
+    if (availResult.ok && availResult.versions) {
+      const dateRe = /^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}$/
+      availableVersions.value = [...availResult.versions]
+      .filter(v => typeof v === 'string' && dateRe.test(v))
+      .reverse()
+      .slice(0, 50)
+    } else {
+      console.error('[SettingsView] getOpenClawAvailableVersions failed:', availResult.error)
+      availableVersions.value = []
+    }
+  } catch (err) {
+    console.error('[SettingsView] showUpgradeDialog exception:', err)
+  }
+  versionsLoading.value = false
+}
+
+async function downloadVersion(version) {
+  downloadingVersion.value = version
+  try {
+    const result = await ipc.installOpenClawCore(version)
+    console.log('[SettingsView] installOpenClawCore result:', JSON.stringify(result))
+    if (result.ok) {
+      if (!installedVersions.value.includes(version)) {
+        installedVersions.value.push(version)
+      }
+    } else {
+      upgradeMsg.value = t('settings.about.upgradeFailed') + (result.error ? `: ${result.error}` : '')
+    }
+  } catch (err) {
+    upgradeMsg.value = t('settings.about.upgradeFailed') + `: ${err.message || err}`
+  }
+  downloadingVersion.value = ''
+}
+
+async function switchToVersion(version) {
+  upgradeDialogVisible.value = false
+  gatewayStore.restarting = true
+  try {
+    const result = await ipc.switchOpenClawVersion(version)
+    console.log('[SettingsView] switchOpenClawVersion result:', JSON.stringify(result))
+    if (result.ok) {
+      await loadSystemInfo()
+      openclawVersion.value = version
+    } else {
+      gatewayStore.restarting = false
+      upgradeMsg.value = t('settings.about.switchFailed') + (result.error ? `: ${result.error}` : '')
+      upgradeState.value = 'failed'
+    }
+  } catch (err) {
+    gatewayStore.restarting = false
+    upgradeMsg.value = t('settings.about.switchFailed') + `: ${err.message || err}`
+    upgradeState.value = 'failed'
+  }
+}
+
 async function upgradeCore() {
   upgradeState.value = 'upgrading'
   upgradeMsg.value = ''
@@ -560,11 +737,11 @@ async function upgradeCore() {
       await loadSystemInfo()
     } else {
       upgradeState.value = 'failed'
-      upgradeMsg.value = t('settings.about.upgradeFailed')
+      upgradeMsg.value = t('settings.about.upgradeFailed') + (result.error ? `: ${result.error}` : '')
     }
-  } catch {
+  } catch (err) {
     upgradeState.value = 'failed'
-    upgradeMsg.value = t('settings.about.upgradeFailed')
+    upgradeMsg.value = t('settings.about.upgradeFailed') + `: ${err.message || err}`
   }
 }
 
@@ -998,7 +1175,157 @@ watch(autoStart, () => {
 }
 .about-utils-row {
   display: flex;
+  align-items: center;
   gap: 10px;
+}
+.about-utils-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 130px;
+  flex-shrink: 0;
+}
+.data-dir-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Upgrade Dialog */
+.upgrade-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.upgrade-dialog {
+  background: var(--color-bg-elevated, #fff);
+  border-radius: 12px;
+  padding: 24px;
+  width: 520px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+}
+.upgrade-dialog-title {
+  margin: 0 0 16px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.upgrade-dialog-loading,
+.upgrade-dialog-empty {
+  text-align: center;
+  color: var(--color-text-tertiary);
+  padding: 24px 0;
+}
+.upgrade-version-cards {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 400px;
+  padding: 4px 2px;
+}
+.version-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border, rgba(0,0,0,0.08));
+  background: var(--color-bg, #fff);
+  transition: border-color 0.15s, box-shadow 0.15s;
+  gap: 12px;
+}
+.version-card:hover {
+  border-color: var(--color-primary-light, rgba(255,107,53,0.3));
+  box-shadow: 0 1px 6px rgba(255,107,53,0.08);
+}
+.version-card.current {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light, rgba(255,107,53,0.05));
+}
+.version-card-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.version-card-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text);
+  font-family: monospace;
+}
+.version-current-tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-primary);
+  color: #fff;
+  flex-shrink: 0;
+}
+.version-installed-tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--color-success);
+  flex-shrink: 0;
+}
+.version-card-action {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.version-card-btn {
+  padding: 5px 14px !important;
+  font-size: 13px !important;
+  border-radius: 6px !important;
+}
+.version-card-status {
+  font-size: 12px;
+  color: var(--color-primary);
+  font-weight: 500;
+}
+.version-card-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 120px;
+}
+.version-card-spinner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mini-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--color-border, rgba(0,0,0,0.12));
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.downloading-text {
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+}
+.upgrade-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border, rgba(0,0,0,0.08));
 }
 
 /* Buttons */
@@ -1057,6 +1384,18 @@ watch(autoStart, () => {
 .lang-flag {
   vertical-align: middle;
   flex-shrink: 0;
+}
+
+/* Registry */
+.registry-active-hint {
+  font-size: 14px;
+  color: var(--color-text);
+  font-weight: 500;
+}
+.registry-hint-sub {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  margin-top: 4px;
 }
 
 </style>

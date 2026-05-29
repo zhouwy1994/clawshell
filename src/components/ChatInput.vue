@@ -106,9 +106,15 @@ function toggleRecording() {
   startRecording({
     onStart: () => { isRecording.value = true },
     onEnd: () => { isRecording.value = false },
-    onComplete: (dataUrl, mimeType) => {
+    onComplete: ({ dataUrl, mimeType, playbackUrl, durationSeconds }) => {
+      console.debug('[chat-input] voice attachment ready', {
+        mimeType,
+        dataUrlLength: typeof dataUrl === 'string' ? dataUrl.length : 0,
+        playbackUrl,
+        durationSeconds,
+      })
       // Send audio as attachment
-      emit('send', '', [{ dataUrl, mimeType, fileName: 'voice-message.webm' }])
+      emit('send', '', [{ dataUrl, mimeType, playbackUrl, durationSeconds, fileName: 'voice-message.webm' }])
     },
     onError: (msg) => {
       isRecording.value = false

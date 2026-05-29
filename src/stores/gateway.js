@@ -9,6 +9,9 @@ export const useGatewayStore = defineStore('gateway', () => {
   const hasModel = ref(false)
   const status = ref('starting') // starting | ready | disconnected | error
   const restarting = ref(false)
+  const mode = ref('local') // 'local' | 'remote'
+  const remoteUrl = ref('')
+  const setupDone = ref(false)
 
   async function refresh() {
     try {
@@ -17,6 +20,9 @@ export const useGatewayStore = defineStore('gateway', () => {
       port.value = data.port
       token.value = data.token
       hasModel.value = data.hasModel
+      mode.value = data.mode || 'local'
+      remoteUrl.value = data.remoteUrl || ''
+      setupDone.value = data.setupDone || false
       if (data.ready) {
         status.value = 'ready'
         restarting.value = false
@@ -34,5 +40,5 @@ export const useGatewayStore = defineStore('gateway', () => {
     status.value = newStatus
   }
 
-  return { ready, port, token, hasModel, status, restarting, refresh, setStatus }
+  return { ready, port, token, hasModel, status, restarting, mode, remoteUrl, setupDone, refresh, setStatus }
 })

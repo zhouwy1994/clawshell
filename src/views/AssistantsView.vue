@@ -27,29 +27,30 @@
           <div
             v-for="agent in agentList"
             :key="agent.id"
-            class="model-card"
+            class="model-card assistant-card"
             :class="{ selected: expandedId === agent.id }"
             @click="toggleExpand(agent)"
           >
-            <span class="check" v-if="expandedId === agent.id">✓</span>
+            <span class="check" v-if="expandedId === agent.id" v-html="getIcon('check', 15)"></span>
+            <span class="assistant-card-sheen"></span>
             <div class="card-header">
-              <div class="avatar-frame" :class="{ 'has-img': isImgAvatar(agent) }">
-                <img v-if="isImgAvatar(agent)" :src="agent.identity?.avatar" class="avatar-img" />
-                <span v-else class="avatar-letter">{{ agent.identity?.avatar || agent.name?.charAt(0) || '?' }}</span>
+              <div class="avatar-frame" :class="{ 'has-img': isCardImgAvatar(agent) }">
+                <img v-if="isCardImgAvatar(agent)" :src="getCardAvatar(agent)" class="avatar-img" />
+                <span v-else class="avatar-letter">{{ getCardAvatarText(agent) }}</span>
               </div>
               <div class="card-title-area">
                 <h4>{{ expandedId === agent.id ? editName : agent.name }}</h4>
-                <p>{{ agent.id }} · {{ agent.model || t('assistants.defaultModel') }}</p>
+                <div class="assistant-meta">
+                  <span class="assistant-chip">
+                    <span class="chip-icon" v-html="getIcon('user', 12)"></span>
+                    {{ agent.id }}
+                  </span>
+                  <span class="assistant-chip">
+                    <span class="chip-icon" v-html="getIcon('brain', 12)"></span>
+                    {{ agent.model || t('assistants.defaultModel') }}
+                  </span>
+                </div>
               </div>
-            </div>
-
-            <!-- Live avatar preview (shown when expanded) -->
-            <div v-if="expandedId === agent.id" class="live-avatar-row">
-              <div class="avatar-preview">
-                <img v-if="isImgDataUrl(editAvatar)" :src="editAvatar" class="avatar-img" />
-                <span v-else class="avatar-letter">{{ editAvatar || editName?.charAt(0) || '?' }}</span>
-              </div>
-              <span class="live-hint">{{ t('assistants.avatarPreview') }}</span>
             </div>
 
             <!-- Expanded form -->
@@ -87,13 +88,23 @@
 
           <!-- New agent card -->
           <div
-            class="model-card"
+            class="model-card assistant-card assistant-create-card"
             :class="{ selected: expandedId === '__new__' }"
             @click="toggleExpand({ id: '__new__' })"
           >
-            <span class="check" v-if="expandedId === '__new__'">✓</span>
-            <h4>{{ t('assistants.newAssistant') }}</h4>
-            <p>{{ t('assistants.newAssistantDesc') }}</p>
+            <span class="check" v-if="expandedId === '__new__'" v-html="getIcon('check', 15)"></span>
+            <span class="assistant-card-sheen"></span>
+            <div class="card-header">
+              <div class="avatar-frame create-avatar" :class="{ 'has-img': isImgDataUrl(newAvatar) }">
+                <img v-if="isImgDataUrl(newAvatar)" :src="newAvatar" class="avatar-img" />
+                <span v-else-if="newAvatar || newName" class="avatar-letter">{{ newAvatar || newName?.charAt(0) || '?' }}</span>
+                <span v-else v-html="getIcon('plus', 22)"></span>
+              </div>
+              <div class="card-title-area">
+                <h4>{{ t('assistants.newAssistant') }}</h4>
+                <p>{{ t('assistants.newAssistantDesc') }}</p>
+              </div>
+            </div>
 
             <div class="channel-form" :class="{ open: expandedId === '__new__' }" @click.stop>
               <div class="form-group">
@@ -172,38 +183,66 @@
 
       <!-- Step 3: Soul Files -->
       <div v-if="step === 3" class="section">
-        <h2>{{ t('assistants.injectSoul') }}</h2>
-        <p class="desc">{{ t('assistants.injectSoulDesc') }}</p>
-
-        <div class="soul-tabs">
-          <button
-            v-for="tab in SOUL_TABS"
-            :key="tab.key"
-            class="soul-tab"
-            :class="{ active: activeTab === tab.key }"
-            @click="activeTab = tab.key"
-          >
-            {{ tab.label }}
-          </button>
+        <div class="section-header">
+          <div>
+            <h2>{{ t('assistants.injectSoul') }}</h2>
+            <p class="desc">{{ t('assistants.injectSoulDesc') }}</p>
+          </div>
+          <div class="edit-mode-tabs">
+            <button class="edit-mode-tab" :class="{ active: editMode === 'structured' }" @click="editMode = 'structured'">
+              {{ t('assistants.editModeStructured') }}
+            </button>
+            <button class="edit-mode-tab" :class="{ active: editMode === 'markdown' }" @click="editMode = 'markdown'">
+              {{ t('assistants.editModeMarkdown') }}
+            </button>
+          </div>
         </div>
 
-        <template v-for="tab in SOUL_TABS" :key="tab.key">
-          <div v-if="activeTab === tab.key" class="soul-panel">
-            <div class="soul-desc">
-              <strong>{{ tab.descTitle }}</strong>
-              <p>{{ tab.desc }}</p>
+        <!-- Guided edit: structured form -->
+        <div v-if="editMode === 'structured'" class="edit-mode-panel">
+          <AgentPersonaForm
+            ref="personaFormRef"
+            v-model="empData"
+            :avatar-list="AVATARS"
+            i18n-prefix="assistants.employee"
+            :show-id-field="false"
+            :show-avatar="false"
+            @request-avatar-upload="triggerStructuredUpload"
+          />
+        </div>
+
+        <!-- Expert edit: markdown editor -->
+        <div v-if="editMode === 'markdown'" class="edit-mode-panel">
+          <div class="soul-tabs">
+                <button
+                  v-for="tab in SOUL_TABS"
+                  :key="tab.key"
+                  class="soul-tab"
+                  :class="{ active: activeTab === tab.key }"
+                  @click="activeTab = tab.key"
+                >
+                  {{ tab.label }}
+                </button>
+              </div>
+
+              <template v-for="tab in SOUL_TABS" :key="tab.key">
+                <div v-if="activeTab === tab.key" class="soul-panel">
+                  <div class="soul-desc">
+                    <strong>{{ tab.descTitle }}</strong>
+                    <p>{{ tab.desc }}</p>
+                  </div>
+                  <div class="soul-toolbar">
+                    <button class="btn btn-secondary btn-sm" @click="useTemplate(tab.key)">{{ t('assistants.useTemplate') }}</button>
+                    <button class="btn btn-secondary btn-sm" @click="clearTemplate(tab.key)">{{ t('assistants.clear') }}</button>
+                  </div>
+                  <textarea
+                    v-model="soulData[tab.key]"
+                    class="soul-editor"
+                    :placeholder="tab.placeholder"
+                  ></textarea>
+                </div>
+              </template>
             </div>
-            <div class="soul-toolbar">
-              <button class="btn btn-secondary btn-sm" @click="useTemplate(tab.key)">{{ t('assistants.useTemplate') }}</button>
-              <button class="btn btn-secondary btn-sm" @click="clearTemplate(tab.key)">{{ t('assistants.clear') }}</button>
-            </div>
-            <textarea
-              v-model="soulData[tab.key]"
-              class="soul-editor"
-              :placeholder="tab.placeholder"
-            ></textarea>
-          </div>
-        </template>
 
         <div class="btn-row">
           <button class="btn btn-secondary" @click="step = 2">{{ t('channels.goBack') }}</button>
@@ -246,37 +285,20 @@ import { useRouter } from 'vue-router'
 import { useConfigStore } from '@/stores/config'
 import { useGatewayStore } from '@/stores/gateway'
 import { t } from '@/i18n'
+import { getIcon } from '@/lib/icons'
+import AgentPersonaForm from '@/components/AgentPersonaForm.vue'
+import { loadAvatarDataUrls } from '@/lib/avatars'
+import { processAvatarFile } from '@/lib/avatar-upload'
+import { generateSoulMd, generateIdentityMd, generateUserMd } from '@/lib/agent-md-generator'
 
 const router = useRouter()
 const configStore = useConfigStore()
 const gatewayStore = useGatewayStore()
 
-const AVATAR_URLS = import.meta.glob('/assets/images/avatars/avatar*.png', { eager: true, query: '?url', import: 'default' })
-const AVATAR_SRC_LIST = Object.entries(AVATAR_URLS)
-  .sort(([a], [b]) => {
-    const na = parseInt(a.match(/avatar(\d+)\.png/)?.[1] || '0')
-    const nb = parseInt(b.match(/avatar(\d+)\.png/)?.[1] || '0')
-    return na - nb
-  })
-  .map(([, url]) => url)
-
 const AVATARS = ref([])
-// Pre-convert all avatar images to data URLs so they're safe to store in identity.avatar
-;(async () => {
-  const results = await Promise.all(AVATAR_SRC_LIST.map(src => new Promise((resolve) => {
-    const img = new Image()
-    img.crossOrigin = 'anonymous'
-    img.onload = () => {
-      const c = document.createElement('canvas')
-      c.width = 96; c.height = 96
-      c.getContext('2d').drawImage(img, 0, 0, 96, 96)
-      resolve(c.toDataURL('image/png'))
-    }
-    img.onerror = () => resolve('')
-    img.src = src
-  })))
-  AVATARS.value = results.filter(Boolean)
-})()
+onMounted(async () => {
+  AVATARS.value = await loadAvatarDataUrls()
+})
 
 const SOUL_TABS = computed(() => [
   {
@@ -348,8 +370,6 @@ const TEMPLATES = {
 - **时间观念**：极强，讨厌拖延`,
 }
 
-const MAX_IMG_SIZE = 96
-
 const step = ref(1)
 const expandedId = ref('')
 const editName = ref('')
@@ -364,6 +384,18 @@ const saving = ref(false)
 const restartDone = ref(false)
 const fileInputRef = ref(null)
 const uploadTarget = ref('new')
+
+// Dual-mode editing state
+const editMode = ref('structured')
+const personaFormRef = ref(null)
+const empData = reactive({
+  name: '', gender: '', age: '', id: '', role: '', duty: '', dept: '',
+  callMe: '', myRelation: '', othersRelation: '',
+  charm: '', style: '', motto: '',
+  skills: '', weakness: '', attitude: '',
+  principle: '', hobby: '', dislike: '',
+  credo: '', report: '', avatar: '',
+})
 
 // Editing existing agent state
 const editingId = ref('')
@@ -392,13 +424,24 @@ const availableModels = computed(() => {
 
 const canStep2 = computed(() => newName.value.trim() && newId.value.trim())
 
-function isImgAvatar(agent) {
-  const a = agent.identity?.avatar || ''
-  return a.startsWith('data:image')
-}
-
 function isImgDataUrl(str) {
   return (str || '').startsWith('data:image')
+}
+
+function getCardAvatar(agent) {
+  return expandedId.value === agent.id ? editAvatar.value : (agent.identity?.avatar || '')
+}
+
+function getCardName(agent) {
+  return expandedId.value === agent.id ? editName.value : (agent.name || '')
+}
+
+function isCardImgAvatar(agent) {
+  return isImgDataUrl(getCardAvatar(agent))
+}
+
+function getCardAvatarText(agent) {
+  return getCardAvatar(agent) || getCardName(agent)?.charAt(0) || '?'
 }
 
 function triggerUpload(target) {
@@ -406,26 +449,18 @@ function triggerUpload(target) {
   fileInputRef.value?.click()
 }
 
-function onFileChange(event) {
+function triggerStructuredUpload() {
+  uploadTarget.value = 'structured'
+  fileInputRef.value?.click()
+}
+
+async function onFileChange(event) {
   const file = event.target.files?.[0]
   if (!file) return
-  const reader = new FileReader()
-  reader.onload = (e) => {
-    const img = new Image()
-    img.onload = () => {
-      const canvas = document.createElement('canvas')
-      const scale = Math.min(MAX_IMG_SIZE / img.width, MAX_IMG_SIZE / img.height, 1)
-      canvas.width = Math.round(img.width * scale)
-      canvas.height = Math.round(img.height * scale)
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-      const dataUrl = canvas.toDataURL('image/png', 0.85)
-      if (uploadTarget.value === 'edit') editAvatar.value = dataUrl
-      else newAvatar.value = dataUrl
-    }
-    img.src = e.target.result
-  }
-  reader.readAsDataURL(file)
+  const dataUrl = await processAvatarFile(file)
+  if (uploadTarget.value === 'edit') editAvatar.value = dataUrl
+  else if (uploadTarget.value === 'structured') personaFormRef.value?.setAvatar(dataUrl)
+  else newAvatar.value = dataUrl
   event.target.value = ''
 }
 
@@ -467,8 +502,32 @@ async function startEditFull(agent) {
     soulData.USER = await window.clawshell.readAgentFile(agent.id, 'USER.md') || ''
   } catch {}
 
+  // Load structured persona data from agent_info.json
+  await loadAgentPersona(agent.id)
+
   expandedId.value = ''
   step.value = 2
+}
+
+async function loadAgentPersona(agentId) {
+  try {
+    const raw = await window.clawshell.readAgentFile(agentId, 'agent_info.json')
+    if (raw) {
+      const info = JSON.parse(raw)
+      Object.keys(empData).forEach(k => {
+        if (info[k] !== undefined) empData[k] = info[k]
+      })
+      return
+    }
+  } catch {}
+  // No agent_info.json — reset to empty
+  Object.keys(empData).forEach(k => { empData[k] = '' })
+  // Seed name/avatar from agent data
+  const agent = agentList.value.find(a => a.id === agentId)
+  if (agent) {
+    empData.name = agent.name || ''
+    empData.avatar = agent.identity?.avatar || ''
+  }
 }
 
 async function handleDelete(agent) {
@@ -483,6 +542,13 @@ function goStep2() {
 }
 
 function goStep3() {
+  // Reset empData for new agents; existing agents already loaded in startEditFull
+  if (!editingId.value) {
+    Object.keys(empData).forEach(k => { empData[k] = '' })
+    empData.name = newName.value
+    empData.avatar = newAvatar.value
+  }
+  editMode.value = 'structured'
   step.value = 3
 }
 
@@ -508,10 +574,24 @@ async function handleSave() {
     return
   }
 
-  for (const key of ['SOUL', 'IDENTITY', 'USER']) {
+  if (editMode.value === 'structured') {
+    // Save agent_info.json
     try {
-      await window.clawshell.writeAgentFile(id, `${key}.md`, soulData[key])
+      await window.clawshell.writeAgentFile(id, 'agent_info.json', JSON.stringify({ ...empData }, null, 2))
     } catch {}
+    // Generate and write .md files from structured data
+    try {
+      await window.clawshell.writeAgentFile(id, 'SOUL.md', generateSoulMd(empData))
+      await window.clawshell.writeAgentFile(id, 'IDENTITY.md', generateIdentityMd(empData))
+      await window.clawshell.writeAgentFile(id, 'USER.md', generateUserMd(empData))
+    } catch {}
+  } else {
+    // Expert mode: write .md files directly
+    for (const key of ['SOUL', 'IDENTITY', 'USER']) {
+      try {
+        await window.clawshell.writeAgentFile(id, `${key}.md`, soulData[key])
+      } catch {}
+    }
   }
 
   saving.value = false
@@ -542,6 +622,8 @@ function resetAndNew() {
   soulData.SOUL = ''
   soulData.IDENTITY = ''
   soulData.USER = ''
+  editMode.value = 'structured'
+  Object.keys(empData).forEach(k => { empData[k] = '' })
   expandedId.value = ''
   step.value = 1
 }
@@ -627,28 +709,36 @@ onMounted(async () => {
 .model-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  gap: 12px;
   margin-bottom: 16px;
 }
 
 .model-card {
-  background: var(--color-bg-tertiary);
-  border: 2px solid var(--color-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0)),
+    var(--color-bg-card);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  padding: 14px;
+  padding: 16px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s, background 0.18s;
   position: relative;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
 }
 
 .model-card:hover {
-  border-color: var(--color-border-light);
-  transform: translateY(-1px);
+  border-color: rgba(139, 124, 255, 0.44);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
 }
 
 .model-card.selected {
   border-color: var(--color-primary);
-  background: rgba(255, 107, 53, 0.06);
+  background:
+    linear-gradient(135deg, rgba(139, 124, 255, 0.16), rgba(41, 224, 194, 0.08)),
+    var(--color-bg-card);
+  box-shadow: var(--shadow-primary);
 }
 
 .model-card h4 {
@@ -665,35 +755,82 @@ onMounted(async () => {
 
 .check {
   position: absolute;
-  top: 8px;
+  top: 10px;
   right: 10px;
-  color: var(--color-primary);
-  font-size: 1.2em;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--color-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 18px rgba(139, 124, 255, 0.34);
+  z-index: 2;
+}
+
+.check :deep(svg) {
+  display: block;
+}
+
+.assistant-card {
+  min-height: 112px;
+}
+
+.assistant-card-sheen {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at top left, rgba(139, 124, 255, 0.18), transparent 38%),
+    radial-gradient(circle at bottom right, rgba(41, 224, 194, 0.12), transparent 34%);
+  opacity: 0;
+  transition: opacity 0.18s;
+}
+
+.assistant-card:hover .assistant-card-sheen,
+.assistant-card.selected .assistant-card-sheen {
+  opacity: 1;
+}
+
+.assistant-create-card {
+  border-style: dashed;
+}
+
+.assistant-create-card:hover,
+.assistant-create-card.selected {
+  border-style: solid;
 }
 
 /* Avatar frame in card header */
 .card-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+  position: relative;
+  z-index: 1;
 }
 
 .avatar-frame {
-  width: 40px;
-  height: 40px;
+  width: 52px;
+  height: 52px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--color-primary), #ff9966);
+  background:
+    linear-gradient(135deg, var(--color-primary), var(--color-accent));
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.16);
 }
 
 .avatar-frame .avatar-letter {
   color: #fff;
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .avatar-frame.has-img {
@@ -706,6 +843,14 @@ onMounted(async () => {
   object-fit: cover;
 }
 
+.create-avatar {
+  color: #fff;
+}
+
+.create-avatar :deep(svg) {
+  display: block;
+}
+
 .card-title-area {
   flex: 1;
   min-width: 0;
@@ -714,7 +859,7 @@ onMounted(async () => {
 .card-title-area h4 {
   color: var(--color-text);
   font-size: var(--font-size-md);
-  margin-bottom: 2px;
+  margin-bottom: 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -723,10 +868,48 @@ onMounted(async () => {
 .card-title-area p {
   color: var(--color-text-tertiary);
   font-size: var(--font-size-xs);
+  line-height: 1.5;
+}
+
+.assistant-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.assistant-chip {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: rgba(139, 124, 255, 0.10);
+  border: 1px solid rgba(139, 124, 255, 0.18);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-chip .chip-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--color-primary);
+}
+
+.assistant-chip .chip-icon :deep(svg) {
+  display: block;
 }
 
 /* Expandable form */
 .channel-form {
+  position: relative;
+  z-index: 1;
   padding-top: 0;
   margin-top: 0;
   border-top: 1px solid var(--color-border);
@@ -738,7 +921,7 @@ onMounted(async () => {
 .channel-form.open {
   max-height: 600px;
   padding-top: 12px;
-  margin-top: 10px;
+  margin-top: 16px;
 }
 
 .channel-form .form-group { margin-bottom: 10px; }
@@ -774,31 +957,6 @@ input:focus { border-color: var(--color-primary); }
   display: flex;
   gap: 14px;
   align-items: flex-start;
-}
-
-.avatar-preview {
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--color-primary), #ff9966);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  overflow: hidden;
-  border: 2px solid var(--color-border);
-}
-
-.avatar-preview .avatar-letter {
-  color: #fff;
-  font-size: 24px;
-  font-weight: 600;
-}
-
-.avatar-preview .avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 
 .avatar-controls {
@@ -873,21 +1031,6 @@ input:focus { border-color: var(--color-primary); }
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   border: 0;
-}
-
-/* Live avatar preview */
-.live-avatar-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--color-border);
-}
-
-.live-hint {
-  color: var(--color-text-tertiary);
-  font-size: var(--font-size-xs);
 }
 
 .upload-row {
@@ -1065,5 +1208,51 @@ input:focus { border-color: var(--color-primary); }
   font-size: var(--font-size-sm);
   font-weight: 500;
   padding: 10px 18px;
+}
+
+/* Section header with right-aligned mode tabs */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.section-header h2 {
+  margin-bottom: 4px;
+}
+
+.edit-mode-tabs {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.edit-mode-tab {
+  padding: 6px 14px;
+  background: var(--color-bg-tertiary);
+  border: none;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.edit-mode-tab + .edit-mode-tab {
+  border-left: 1px solid var(--color-border);
+}
+
+.edit-mode-tab:hover { color: var(--color-text); }
+.edit-mode-tab.active {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.edit-mode-panel {
+  animation: fadeIn 0.2s;
 }
 </style>

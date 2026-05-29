@@ -41,7 +41,7 @@ export const useConfigStore = defineStore('config', () => {
     return !!cfg.agents?.defaults?.model?.primary
   }
 
-  async function saveModelConfig(provider, baseUrl, modelId, apiKey, providerModels) {
+  async function saveModelConfig(provider, baseUrl, modelId, apiKey, providerModels, apiType) {
     try {
       const cfg = await ipc.getConfig()
 
@@ -64,7 +64,7 @@ export const useConfigStore = defineStore('config', () => {
         cfg.models.providers[provider] = {
           baseUrl,
           apiKey,
-          api: 'openai-completions',
+          api: apiType || 'openai-completions',
           models: modelsArray,
         }
         if (!hasPrimaryModel(cfg)) {

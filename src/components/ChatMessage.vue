@@ -36,6 +36,55 @@
           :class="{ 'md-content': message.role === 'assistant' }"
           v-html="renderedContent"
         ></div>
+        <div v-if="mediaAttachments.length > 0" class="attachment-list">
+          <div
+            v-for="(attachment, index) in mediaAttachments"
+            :key="`media-${index}`"
+            class="attachment-card"
+            :class="attachment.kind"
+          >
+            <template v-if="attachment.kind === 'audio'">
+              <button
+                class="voice-chip"
+                :class="[message.role, { playing: isAudioPlaying(attachment.url) }]"
+                type="button"
+                @click="toggleAudio(attachment.url)"
+              >
+                <span class="voice-icon" v-html="getIcon(isAudioPlaying(attachment.url) ? 'pause' : 'volume-2', 16)"></span>
+                <span class="voice-waves" aria-hidden="true">
+                  <span class="voice-wave wave-1"></span>
+                  <span class="voice-wave wave-2"></span>
+                  <span class="voice-wave wave-3"></span>
+                </span>
+                <span class="voice-duration">{{ formatAudioDuration(attachment) }}</span>
+                <audio
+                  :ref="el => setAudioRef(attachment.url, el)"
+                  class="audio-player sr-only-audio"
+                  :src="attachment.url"
+                  preload="metadata"
+                  @loadedmetadata="handleAudioMetadata(attachment, $event)"
+                  @durationchange="handleAudioDurationChange(attachment, $event)"
+                  @canplay="logAudioEvent('canplay', attachment, $event)"
+                  @timeupdate="handleAudioTimeUpdate(attachment.url, $event)"
+                  @play="handleAudioPlay(attachment.url)"
+                  @pause="handleAudioPause(attachment.url)"
+                  @ended="handleAudioEnded(attachment.url)"
+                  @error="logAudioEvent('error', attachment, $event)"
+                ></audio>
+              </button>
+            </template>
+            <template v-else-if="attachment.kind === 'image'">
+              <img class="attachment-image" :src="attachment.url" :alt="attachment.label" />
+              <div class="attachment-label">{{ attachment.label }}</div>
+            </template>
+            <template v-else>
+              <div class="attachment-header">
+                <span class="attachment-icon" v-html="getIcon('file', 16)"></span>
+                <span class="attachment-label">{{ attachment.label }}</span>
+              </div>
+            </template>
+          </div>
+        </div>
         <span v-if="streaming" class="typing-cursor"></span>
       </div>
       <div v-if="!streaming" class="message-footer">
@@ -72,7 +121,7 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted, nextTick, watch } from 'vue'
+import { computed, ref, onMounted, nextTick, watch, onBeforeUnmount } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { ipc } from '@/lib/ipc'
 import hljs from 'highlight.js/lib/core'
@@ -134,6 +183,149 @@ const displayText = computed(() => {
   }
   return ''
 })
+
+function getDataUrlMime(url) {
+  if (typeof url !== 'string') return ''
+  const match = url.match(/^data:([^;,]+)[;,]/i)
+  return match?.[1]?.toLowerCase() || ''
+}
+
+function inferAttachmentKind(block) {
+  if (!block || typeof block !== 'object') return 'file'
+  if (block.type === 'image' && block.source?.data) return 'image'
+  const url = block.attachment?.playbackUrl || block.attachment?.url || ''
+  const mime = getDataUrlMime(url)
+  if (url.startsWith('blob:')) return 'audio'
+  if (mime.startsWith('audio/')) return 'audio'
+  if (mime.startsWith('image/')) return 'image'
+  return 'file'
+}
+
+const mediaAttachments = computed(() => {
+  const content = props.message.content
+  if (!Array.isArray(content)) return []
+
+  return content.flatMap((block) => {
+    if (!block || typeof block !== 'object') return []
+
+    if (block.type === 'image' && block.source?.type === 'base64' && block.source?.data) {
+      return [{
+        kind: 'image',
+        label: block.source.media_type || 'image',
+        url: block.source.data,
+      }]
+    }
+
+    if (block.type !== 'attachment' || !block.attachment?.url) return []
+
+    return [{
+      kind: inferAttachmentKind(block),
+      label: block.attachment.label || 'attachment',
+      durationSeconds: block.attachment.durationSeconds || 0,
+      url: block.attachment.playbackUrl || block.attachment.url,
+    }]
+  })
+})
+
+const audioRefs = new Map()
+const audioDurationMap = ref({})
+const audioPlayingMap = ref({})
+
+function setAudioRef(url, el) {
+  if (!url) return
+  if (el) audioRefs.set(url, el)
+  else audioRefs.delete(url)
+}
+
+function updateAudioDuration(url, rawDuration) {
+  if (!url || !Number.isFinite(rawDuration) || rawDuration <= 0) return
+  const seconds = Math.max(1, Math.ceil(rawDuration))
+  if (audioDurationMap.value[url] === seconds) return
+  audioDurationMap.value = {
+    ...audioDurationMap.value,
+    [url]: seconds,
+  }
+}
+
+function handleAudioMetadata(attachment, event) {
+  logAudioEvent('loadedmetadata', attachment, event)
+  const el = event?.target
+  updateAudioDuration(attachment.url, el?.duration)
+}
+
+function handleAudioDurationChange(attachment, event) {
+  logAudioEvent('durationchange', attachment, event)
+  const el = event?.target
+  updateAudioDuration(attachment.url, el?.duration)
+}
+
+function handleAudioPlay(url) {
+  const nextState = {}
+  for (const key of Object.keys(audioPlayingMap.value)) nextState[key] = false
+  nextState[url] = true
+  audioPlayingMap.value = nextState
+}
+
+function handleAudioPause(url) {
+  audioPlayingMap.value = {
+    ...audioPlayingMap.value,
+    [url]: false,
+  }
+}
+
+function handleAudioEnded(url) {
+  const el = audioRefs.get(url)
+  if (el) updateAudioDuration(url, Math.max(el.duration || 0, el.currentTime || 0))
+  if (el) el.currentTime = 0
+  handleAudioPause(url)
+}
+
+function handleAudioTimeUpdate(url, event) {
+  const el = event?.target
+  updateAudioDuration(url, Math.max(el?.duration || 0, el?.currentTime || 0))
+}
+
+function isAudioPlaying(url) {
+  return !!audioPlayingMap.value[url]
+}
+
+function toggleAudio(url) {
+  const target = audioRefs.get(url)
+  if (!target) return
+
+  for (const [key, el] of audioRefs.entries()) {
+    if (key !== url && el && !el.paused) el.pause()
+  }
+
+  if (target.paused) target.play().catch((error) => {
+    console.debug('[chat-message] audio.play.error', { url, error: error?.message || String(error) })
+  })
+  else target.pause()
+}
+
+function formatAudioDuration(attachment) {
+  const seconds = audioDurationMap.value[attachment.url] || attachment.durationSeconds || 0
+  if (!seconds) return '--'
+  if (seconds < 60) return `${seconds}"`
+  const mins = Math.floor(seconds / 60)
+  const secs = String(seconds % 60).padStart(2, '0')
+  return `${mins}:${secs}`
+}
+
+function logAudioEvent(stage, attachment, event) {
+  const el = event?.target
+  console.debug(`[chat-message] audio.${stage}`, {
+    url: attachment?.url,
+    currentSrc: el?.currentSrc,
+    duration: Number.isFinite(el?.duration) ? el.duration : null,
+    readyState: el?.readyState,
+    networkState: el?.networkState,
+    error: el?.error ? {
+      code: el.error.code,
+      message: el.error.message,
+    } : null,
+  })
+}
 
 const thinkingText = computed(() => {
   const content = props.message.content
@@ -198,8 +390,9 @@ function isImageFile(filePath) {
   return IMAGE_EXTS.has(ext)
 }
 
-// Match Windows paths (C:\...\ext) and UNC paths (\\server\...\ext)
-const LOCAL_PATH_RE = /(?:[A-Za-z]:[\\\/][^\s"'|*?#<>]+\.[A-Za-z0-9]{1,10})(?=<\/|$|\s|<)|(?:\\\\[^\s"'|*?#<>]+\.[A-Za-z0-9]{1,10})(?=<\/|$|\s|<)/g
+// Match Windows paths (C:\...\dir or C:\...\ext) and UNC paths (\\server\...\dir)
+// Allows optional extension (\.[A-Za-z0-9]{1,10}) so both files and directories match
+const LOCAL_PATH_RE = /(?:[A-Za-z]:[\\\/][^\s"'|*?#<>]+?(?:\.[A-Za-z0-9]{1,10})?)(?=[.,;:!?)\]}>。，；：！？、）】}\s<\/]|$|<)|(?:\\\\[^\s"'|*?#<>]+?(?:\.[A-Za-z0-9]{1,10})?)(?=[.,;:!?)\]}>。，；：！？、）】}\s<\/]|$|<)/g
 
 function escAttr(s) {
   return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
@@ -211,9 +404,9 @@ function processFilePaths(html) {
     const cleanPath = match.replace(/[.,;:!?)\]}>。，；：！？、）】}]+$/, '')
     const escaped = escAttr(cleanPath)
     if (isImageFile(cleanPath)) {
-      return `<div class="inline-file-preview" data-img-path="${escaped}"><div class="preview-loading">${t('chat.loading')}</div><span class="preview-label" data-open="${escaped}">${match}</span></div>`
+      return `<div class="inline-file-preview" data-img-path="${escaped}"><div class="preview-loading">${t('chat.loading')}</div><span class="preview-label" data-open="${escaped}">${cleanPath}</span></div>`
     }
-    return `<span class="file-link" data-open="${escaped}">${match}</span>`
+    return `<span class="file-link" data-open="${escaped}">${cleanPath}</span>`
   })
   // 2. Enhance existing <a> tags that link to images
   result = result.replace(/<a href="(https?:\/\/[^"]+)">([^<]*)<\/a>/g, (full, href, text) => {
@@ -381,6 +574,13 @@ function stripMarkdown(text) {
 function handleDelete() {
   emit('delete', props.message)
 }
+
+onBeforeUnmount(() => {
+  for (const el of audioRefs.values()) {
+    if (el && !el.paused) el.pause()
+  }
+  audioRefs.clear()
+})
 </script>
 
 <style scoped>
@@ -509,6 +709,171 @@ function handleDelete() {
   overflow-wrap: break-word;
 }
 
+.attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.message-content + .attachment-list {
+  margin-top: 10px;
+}
+
+.attachment-card {
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  min-width: 220px;
+  max-width: min(320px, 70vw);
+}
+
+.message-bubble.assistant .attachment-card {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border);
+}
+
+.attachment-card.audio {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  min-width: 0;
+  max-width: none;
+}
+
+.attachment-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.compact-audio {
+  gap: 10px;
+}
+
+.attachment-icon {
+  display: flex;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+.attachment-icon :deep(svg) { display: block; }
+
+.attachment-label {
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  word-break: break-all;
+  opacity: 0.92;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.audio-player {
+  display: block;
+  width: 100%;
+  height: 36px;
+}
+
+.sr-only-audio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.attachment-image {
+  display: block;
+  width: 100%;
+  max-height: 280px;
+  object-fit: cover;
+  border-radius: 10px;
+  margin-bottom: 8px;
+}
+
+.voice-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 136px;
+  max-width: 220px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 0;
+  cursor: pointer;
+  position: relative;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.voice-chip.user {
+  background: rgba(255, 255, 255, 0.18);
+  color: inherit;
+}
+
+.voice-chip.assistant {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+}
+
+.voice-chip:hover {
+  transform: translateY(-1px);
+}
+
+.voice-chip.playing .voice-wave {
+  animation: voice-wave 1s ease-in-out infinite;
+}
+
+.voice-chip.playing .wave-2 {
+  animation-delay: 0.12s;
+}
+
+.voice-chip.playing .wave-3 {
+  animation-delay: 0.24s;
+}
+
+.voice-icon {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.voice-icon :deep(svg) { display: block; }
+
+.voice-waves {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  flex: 1;
+  min-width: 42px;
+}
+
+.voice-wave {
+  width: 3px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.72;
+  transform-origin: bottom center;
+}
+
+.wave-1 { height: 8px; }
+.wave-2 { height: 14px; }
+.wave-3 { height: 10px; }
+
+.voice-duration {
+  font-size: var(--font-size-xs);
+  line-height: 1;
+  opacity: 0.82;
+  flex-shrink: 0;
+  min-width: 24px;
+  text-align: right;
+}
+
+@keyframes voice-wave {
+  0%, 100% { transform: scaleY(0.55); opacity: 0.55; }
+  50% { transform: scaleY(1.15); opacity: 1; }
+}
+
 .md-content :deep(p) { margin-bottom: 8px; }
 .md-content :deep(p:last-child) { margin-bottom: 0; }
 .md-content :deep(ul), .md-content :deep(ol) { padding-left: 20px; margin-bottom: 8px; }
@@ -518,6 +883,7 @@ function handleDelete() {
   border-radius: 3px;
   font-family: 'Cascadia Code', 'Fira Code', monospace;
   font-size: var(--font-size-sm);
+  color: var(--color-text);
 }
 
 .md-content :deep(pre) {
@@ -527,6 +893,7 @@ function handleDelete() {
   overflow-x: auto;
   margin: 8px 0;
   position: relative;
+  color: var(--color-text);
 }
 
 .md-content :deep(pre code) {
@@ -534,6 +901,7 @@ function handleDelete() {
   padding: 0;
   font-size: var(--font-size-sm);
   line-height: 1.6;
+  color: inherit;
 }
 
 .md-content :deep(blockquote) {

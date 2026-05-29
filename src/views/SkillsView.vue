@@ -44,6 +44,50 @@
           <button v-if="isSearchMode" class="btn btn-sm search-clear" @click="clearSearch">{{ t('skills.clearSearch') }}</button>
         </div>
 
+        <div class="install-target-bar">
+          <div class="target-title">
+            <span class="target-title-icon" v-html="getIcon('zap', 14)"></span>
+            <span>{{ t('skills.installTarget') }}</span>
+          </div>
+          <div class="target-scope-toggle" role="radiogroup" :aria-label="t('skills.installTarget')">
+            <button
+              type="button"
+              class="target-toggle"
+              :class="{ active: installScope === 'global' }"
+              role="radio"
+              :aria-checked="installScope === 'global'"
+              @click="installScope = 'global'"
+            >
+              {{ t('skills.targetGlobal') }}
+            </button>
+            <button
+              type="button"
+              class="target-toggle"
+              :class="{ active: installScope === 'agent' }"
+              role="radio"
+              :aria-checked="installScope === 'agent'"
+              @click="installScope = 'agent'"
+            >
+              {{ t('skills.targetAssistant') }}
+            </button>
+          </div>
+          <label v-if="installScope === 'agent'" class="target-agent-picker">
+            <span class="target-agent-label">{{ t('skills.targetAssistantLabel') }}</span>
+            <span class="target-select-wrap">
+              <select v-model="selectedAgentId" class="target-select">
+                <option v-for="agent in agentOptions" :key="agent.id" :value="agent.id">
+                  {{ agent.name || agent.id }}
+                </option>
+              </select>
+              <span class="target-select-chevron" v-html="getIcon('chevron-down', 12)"></span>
+            </span>
+          </label>
+          <span class="target-hint">
+            <span class="target-hint-dot"></span>
+            {{ activeSkillTargetLabel }}
+          </span>
+        </div>
+
         <div v-if="!selectedL1 && !isSearchMode" class="skills-empty">
           <div class="empty-icon">⚡</div>
           <p>{{ t('skills.loading') }}</p>
@@ -78,6 +122,7 @@
                 <span v-if="skill.ownerName" class="skill-owner">{{ skill.ownerName }}</span>
                 <span v-if="skill.version" class="skill-version">v{{ skill.version }}</span>
                 <span v-if="skill.installs" class="skill-installs">{{ t('skills.installs').replace('{n}', formatNum(skill.installs)) }}</span>
+                <span v-if="isInstalled(skill.slug)" class="skill-scope">{{ activeSkillTargetLabel }}</span>
               </div>
               <div class="skill-actions">
                 <template v-if="isInstalling(skill.slug)">
@@ -90,12 +135,12 @@
                   <button class="btn btn-sm btn-readme" @click="openReadme(skill.slug)">{{ t('skills.viewReadme') }}</button>
                   <span class="skill-status installed">{{ t('skills.installed') }}</span>
                   <button
-                    v-if="isEnabled(skill.slug)"
+                    v-if="installScope === 'global' && isEnabled(skill.slug)"
                     class="btn btn-sm btn-enabled"
                     @click="toggleEnable(skill.slug, false)"
                   >{{ t('skills.enabling') }}</button>
                   <button
-                    v-else
+                    v-else-if="installScope === 'global'"
                     class="btn btn-sm btn-enable"
                     @click="toggleEnable(skill.slug, true)"
                   >{{ t('skills.enable') }}</button>
@@ -136,6 +181,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ipc } from '@/lib/ipc'
 import { useConfigStore } from '@/stores/config'
 import { t, locale } from '@/i18n'
+import { getIcon } from '@/lib/icons'
 
 const configStore = useConfigStore()
 
@@ -157,6 +203,8 @@ const readmeContent = ref('')
 const readmeOpen = ref(false)
 const searchKeyword = ref('')
 const isSearchMode = ref(false)
+const installScope = ref('global')
+const selectedAgentId = ref('main')
 
 const currentL1Name = computed(() => {
   const cat = categories.value.find(c => c.l1_id === selectedL1.value)
@@ -170,6 +218,32 @@ const currentL2Name = computed(() => {
 
 const skillEntries = computed(() => {
   return configStore.config?.skills?.entries || {}
+})
+
+const agentOptions = computed(() => {
+  const list = configStore.config?.agents?.list
+  if (Array.isArray(list) && list.length > 0) {
+    return list.map(agent => ({
+      id: agent.id || 'main',
+      name: agent.name || agent.identity?.name || agent.id || 'main',
+    }))
+  }
+  return [{ id: 'main', name: 'main' }]
+})
+
+const activeSkillTarget = computed(() => {
+  if (installScope.value === 'agent') {
+    return { scope: 'agent', agentId: selectedAgentId.value || 'main' }
+  }
+  return { scope: 'global' }
+})
+
+const activeSkillTargetLabel = computed(() => {
+  if (installScope.value === 'agent') {
+    const agent = agentOptions.value.find(item => item.id === selectedAgentId.value)
+    return t('skills.targetAssistantScope').replace('{name}', agent?.name || selectedAgentId.value || 'main')
+  }
+  return t('skills.targetGlobal')
 })
 
 function catName(cat) {
@@ -236,9 +310,10 @@ async function loadSubcategories(l1Id) {
 
 async function loadInstalled() {
   try {
-    installedSlugs.value = await ipc.listInstalledSkills()
+    installedSlugs.value = await ipc.listInstalledSkills(activeSkillTarget.value)
   } catch (err) {
     console.error('Failed to load installed skills:', err)
+    installedSlugs.value = []
   }
 }
 
@@ -307,10 +382,11 @@ async function goPage(p) {
 async function handleInstall(slug) {
   installingSet[slug] = true
   try {
-    await ipc.installSkill(slug)
+    await ipc.installSkill(slug, activeSkillTarget.value)
     await loadInstalled()
-    // Auto-enable after install
-    await configStore.saveSkillEntry(slug, true)
+    if (installScope.value === 'global') {
+      await configStore.saveSkillEntry(slug, true)
+    }
   } catch (err) {
     console.error('Install failed:', err)
   }
@@ -320,7 +396,7 @@ async function handleInstall(slug) {
 async function handleUninstall(slug) {
   uninstallingSet[slug] = true
   try {
-    await ipc.uninstallSkill(slug)
+    await ipc.uninstallSkill(slug, activeSkillTarget.value)
     await loadInstalled()
   } catch (err) {
     console.error('Uninstall failed:', err)
@@ -337,8 +413,8 @@ async function openReadme(slug) {
   readmeOpen.value = true
   readmeContent.value = t('skills.readmeLoading')
   try {
-    let content = await ipc.readSkillFile(slug, 'SKILL.md')
-    if (!content) content = await ipc.readSkillFile(slug, 'README.md')
+    let content = await ipc.readSkillFile(slug, 'SKILL.md', activeSkillTarget.value)
+    if (!content) content = await ipc.readSkillFile(slug, 'README.md', activeSkillTarget.value)
     readmeContent.value = content || t('skills.readmeNotFound')
   } catch {
     readmeContent.value = t('skills.readmeError')
@@ -376,6 +452,7 @@ function clearSearch() {
 
 onMounted(async () => {
   await configStore.load()
+  selectedAgentId.value = agentOptions.value[0]?.id || 'main'
   await loadCategories()
   await loadInstalled()
   // Auto-select first category on mount
@@ -391,6 +468,10 @@ onMounted(async () => {
 
 watch(selectedL2, () => {
   if (selectedL2.value) loadSkills()
+})
+
+watch([installScope, selectedAgentId], () => {
+  loadInstalled()
 })
 </script>
 
@@ -544,6 +625,150 @@ watch(selectedL2, () => {
 
 .search-input:focus {
   border-color: var(--color-primary);
+}
+
+.install-target-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 8px 10px;
+  background: linear-gradient(180deg, var(--color-bg-secondary), var(--color-bg-card));
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+}
+
+.target-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.target-title-icon {
+  display: inline-flex;
+  color: var(--color-primary);
+}
+
+.target-title-icon :deep(svg),
+.target-select-chevron :deep(svg) {
+  display: block;
+}
+
+.target-scope-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.target-toggle {
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.target-toggle:hover {
+  color: var(--color-text);
+}
+
+.target-toggle.active {
+  background: var(--color-bg-card);
+  color: var(--color-primary);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
+}
+
+.target-agent-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.target-agent-label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+.target-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 150px;
+  max-width: 240px;
+}
+
+.target-select {
+  width: 100%;
+  height: 34px;
+  padding: 0 32px 0 12px;
+  appearance: none;
+  outline: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  background: var(--color-bg-card);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+
+.target-select:hover {
+  border-color: var(--color-primary);
+}
+
+.target-select:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+.target-select-chevron {
+  position: absolute;
+  right: 10px;
+  display: inline-flex;
+  pointer-events: none;
+  color: var(--color-text-tertiary);
+}
+
+.target-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  min-width: 0;
+  padding: 5px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.target-hint-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+  flex-shrink: 0;
 }
 
 .search-btn {
@@ -750,6 +975,13 @@ watch(selectedL2, () => {
 
 .skill-installs {
   opacity: 0.8;
+}
+
+.skill-scope {
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+  padding: 1px 6px;
+  border-radius: 4px;
 }
 
 .skill-actions {

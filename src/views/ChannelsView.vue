@@ -41,9 +41,9 @@
             <h4><span class="ch-icon" v-html="getIcon(ch.icon, 18)"></span> {{ ch.name }}</h4>
             <p>{{ ch.desc }}</p>
             <span v-if="isConfigured(ch.id)" class="current-badge configured-badge">{{ t('channels.configured') }}</span>
-            <!-- Plugin needed but not installed -->
+            <!-- Plugin needed but not installed (and not a stock plugin) -->
             <div
-              v-if="ch.pluginSpec && !isPluginInstalled(ch.id)"
+              v-if="ch.pluginSpec && !ch.stockPlugin && !isPluginInstalled(ch.id)"
               class="channel-form plugin-status"
               :class="{ open: selectedChannel === ch.id }"
               @click.stop
@@ -265,7 +265,7 @@ const CHANNEL_DEFS = computed(() => {
       desc: '接入 QQ 群/私聊机器人',
       descEn: 'Connect QQ Group/Private Bot',
       pluginSpec: '@openclaw/qqbot',
-      installCmd: { type: 'openclaw', spec: '@openclaw/qqbot' },
+      installCmd: { type: 'openclaw', spec: 'clawhub:@openclaw/qqbot' },
       fields: [
         { key: 'appId', label: 'App ID', placeholder: '应用 ID', placeholderEn: 'App ID', secret: false },
         { key: 'clientSecret', label: 'Client Secret', placeholder: '应用密钥', placeholderEn: 'App Secret', secret: true, hint: '→ 从 QQ 开放平台获取', hintEn: '→ Get from QQ Open Platform', hintLink: 'https://q.qq.com' },
@@ -280,7 +280,7 @@ const CHANNEL_DEFS = computed(() => {
       desc: '接入飞书机器人',
       descEn: 'Connect Feishu Bot',
       pluginSpec: '@openclaw/feishu',
-      installCmd: { type: 'openclaw', spec: '@openclaw/feishu' },
+      installCmd: { type: 'openclaw', spec: 'clawhub:@openclaw/feishu' },
       fields: [
         { key: 'appId', label: 'App ID', placeholder: 'cli_xxx...', secret: false },
         { key: 'appSecret', label: 'App Secret', placeholder: '应用密钥', placeholderEn: 'App Secret', secret: true, hint: '→ 从飞书开放平台获取', hintEn: '→ Get from Feishu Open Platform', hintLink: 'https://open.feishu.cn/app' },
@@ -294,8 +294,8 @@ const CHANNEL_DEFS = computed(() => {
       region: 'cn',
       desc: '接入企业微信机器人',
       descEn: 'Connect WeCom Bot',
-      pluginSpec: 'openclaw-wecom',
-      installCmd: { type: 'openclaw', spec: 'openclaw-wecom' },
+      pluginSpec: 'wecom-openclaw-plugin',
+      installCmd: { type: 'npx', args: ['-y', '@wecom/wecom-openclaw-cli', 'install', '--skip-config'] },
       fields: [
         { key: 'botId', label: 'Bot ID', placeholder: 'aib...', secret: false },
         { key: 'secret', label: 'Secret', placeholder: '密钥', placeholderEn: 'Secret', secret: true, hint: '→ 从企业微信管理后台获取', hintEn: '→ Get from WeCom Admin Console', hintLink: 'https://work.weixin.qq.com' },
@@ -310,7 +310,7 @@ const CHANNEL_DEFS = computed(() => {
       desc: '接入钉钉机器人',
       descEn: 'Connect DingTalk Bot',
       pluginSpec: '@soimy/dingtalk',
-      installCmd: { type: 'openclaw', spec: '@soimy/dingtalk' },
+      installCmd: { type: 'openclaw', spec: 'clawhub:@soimy/dingtalk' },
       fields: [
         { key: 'clientId', label: 'Client ID (AppKey)', placeholder: 'dingxxxxxx', secret: false },
         { key: 'clientSecret', label: 'Client Secret (AppSecret)', placeholder: '应用密钥', placeholderEn: 'App Secret', secret: true, hint: '→ 从钉钉开放平台获取', hintEn: '→ Get from DingTalk Open Platform', hintLink: 'https://open-dev.dingtalk.com' },
@@ -325,7 +325,7 @@ const CHANNEL_DEFS = computed(() => {
       desc: '接入微信（插件管理）',
       descEn: 'Connect WeChat (plugin managed)',
       pluginSpec: '@tencent-weixin/openclaw-weixin',
-      installCmd: { type: 'npx', args: ['-y', '@tencent-weixin/openclaw-weixin-cli@latest', 'install', '--registry=https://registry.npmmirror.com'] },
+      installCmd: { type: 'npx', args: ['-y', '@tencent-weixin/openclaw-weixin-cli@latest', 'install'] },
       fields: null,
     },
     // ── 国际渠道 ──
@@ -337,8 +337,8 @@ const CHANNEL_DEFS = computed(() => {
       region: 'global',
       desc: '接入 Telegram Bot',
       descEn: 'Connect Telegram Bot',
-      pluginSpec: 'openclaw-telegram',
-      installCmd: { type: 'openclaw', spec: 'openclaw-telegram' },
+      pluginSpec: 'telegram',
+      stockPlugin: true,
       fields: [
         { key: 'token', label: 'Bot Token', placeholder: '123456:ABC-DEF...', secret: true, hint: '→ 从 @BotFather 获取', hintEn: '→ Get from @BotFather', hintLink: 'https://t.me/BotFather' },
       ],
@@ -351,8 +351,8 @@ const CHANNEL_DEFS = computed(() => {
       region: 'global',
       desc: '接入 Discord Bot',
       descEn: 'Connect Discord Bot',
-      pluginSpec: 'openclaw-discord',
-      installCmd: { type: 'openclaw', spec: 'openclaw-discord' },
+      pluginSpec: 'discord',
+      installCmd: { type: 'openclaw', spec: 'clawhub:@openclaw/discord' },
       fields: [
         { key: 'token', label: 'Bot Token', placeholder: 'MTk4Nj...', secret: true, hint: '→ 从 Discord Developer Portal 获取', hintEn: '→ Get from Discord Developer Portal', hintLink: 'https://discord.com/developers/applications' },
         { key: 'applicationId', label: 'Application ID', placeholder: '1234567890...', secret: false, hint: '→ 从应用 General Information 页获取', hintEn: '→ Get from app General Information page' },
@@ -366,8 +366,8 @@ const CHANNEL_DEFS = computed(() => {
       region: 'global',
       desc: '接入 Slack Bot',
       descEn: 'Connect Slack Bot',
-      pluginSpec: 'openclaw-slack',
-      installCmd: { type: 'openclaw', spec: 'openclaw-slack' },
+      pluginSpec: 'slack',
+      stockPlugin: true,
       fields: [
         { key: 'botToken', label: 'Bot Token (xoxb-)', placeholder: 'xoxb-xxxx-xxxx...', secret: true, hint: '→ 从 Slack API 获取', hintEn: '→ Get from Slack API', hintLink: 'https://api.slack.com/apps' },
         { key: 'appToken', label: 'App Token (xapp-)', placeholder: 'xapp-1-xxxx...', secret: true, hint: '→ Socket Mode 使用的 App-Level Token', hintEn: '→ App-Level Token for Socket Mode' },
@@ -381,8 +381,8 @@ const CHANNEL_DEFS = computed(() => {
       region: 'global',
       desc: '接入 WhatsApp Business',
       descEn: 'Connect WhatsApp Business',
-      pluginSpec: 'openclaw-whatsapp',
-      installCmd: { type: 'openclaw', spec: 'openclaw-whatsapp' },
+      pluginSpec: 'whatsapp',
+      installCmd: { type: 'openclaw', spec: 'clawhub:@openclaw/whatsapp' },
       fields: [
         { key: 'phoneNumberId', label: 'Phone Number ID', placeholder: '123456789012345', secret: false, hint: '→ 从 Meta Business 设置获取', hintEn: '→ Get from Meta Business Settings', hintLink: 'https://business.facebook.com/wa/manage/phone-numbers' },
         { key: 'accessToken', label: 'Access Token', placeholder: 'EAAx...', secret: true, hint: '→ 从 Meta 应用面板生成永久 Token', hintEn: '→ Generate permanent token from Meta app panel' },
@@ -396,8 +396,8 @@ const CHANNEL_DEFS = computed(() => {
       region: 'global',
       desc: '接入 LINE Bot',
       descEn: 'Connect LINE Bot',
-      pluginSpec: 'openclaw-line',
-      installCmd: { type: 'openclaw', spec: 'openclaw-line' },
+      pluginSpec: 'line',
+      installCmd: { type: 'openclaw', spec: 'clawhub:@openclaw/line' },
       fields: [
         { key: 'channelAccessToken', label: 'Channel Access Token', placeholder: '长期访问令牌', placeholderEn: 'Long-lived access token', secret: true, hint: '→ 从 LINE Developers Console 获取', hintEn: '→ Get from LINE Developers Console', hintLink: 'https://developers.line.biz/console' },
         { key: 'channelSecret', label: 'Channel Secret', placeholder: '通道密钥', placeholderEn: 'Channel secret', secret: true, hint: '→ Messaging API 设置页', hintEn: '→ Messaging API settings page' },
@@ -442,6 +442,7 @@ const isWeixinInstalled = computed(() => {
 function isPluginInstalled(channelId) {
   const ch = CHANNEL_DEFS.value.find(c => c.id === channelId)
   if (!ch?.pluginSpec) return true  // no plugin needed
+  if (ch.stockPlugin) return true  // stock plugins are always available
   const cfg = configStore.config
   // Check plugins.installs
   const installs = cfg?.plugins?.installs || {}
@@ -512,7 +513,7 @@ const canGoStep2 = computed(() => {
   if (!selectedChannel.value) return false
   const ch = CHANNEL_DEFS.value.find(c => c.id === selectedChannel.value)
   if (!ch) return false
-  if (ch.pluginSpec && !isPluginInstalled(selectedChannel.value)) return false
+  if (ch.pluginSpec && !ch.stockPlugin && !isPluginInstalled(selectedChannel.value)) return false
   if (installingPlugins[selectedChannel.value]) return false
   return true
 })
@@ -767,15 +768,25 @@ function resetAndNew() {
   }
 }
 
-function copyTerminalLog(channelId) {
+async function copyTerminalLog(channelId) {
   const text = installLogs[channelId] || ''
-  navigator.clipboard.writeText(text).then(() => {
-    const btn = document.querySelector('.btn-copy')
-    if (btn) {
-      btn.textContent = t('channels.copied')
-      setTimeout(() => { btn.textContent = t('channels.copyLog') }, 1500)
-    }
-  })
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
+  const btn = document.querySelector('.btn-copy')
+  if (btn) {
+    btn.textContent = t('channels.copied')
+    setTimeout(() => { btn.textContent = t('channels.copyLog') }, 1500)
+  }
 }
 
 onMounted(async () => {

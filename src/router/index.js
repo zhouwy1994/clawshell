@@ -47,6 +47,12 @@ export const routes = [
     meta: { requiresGateway: true },
   },
   {
+    path: '/schedules',
+    name: 'schedules',
+    component: () => import('@/views/SchedulesView.vue'),
+    meta: { requiresGateway: true },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/SettingsView.vue'),

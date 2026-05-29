@@ -30,6 +30,7 @@
             @click="selected = p.id"
           >
             <span class="check" v-if="selected === p.id">✓</span>
+            <span class="model-logo" v-html="getModelIcon(p.id, 20)"></span>
             <h4>
               {{ p.name }}
               <span v-for="t in p.tags" :key="t" class="tag" :class="tagClass(t)">{{ t }}</span>
@@ -124,6 +125,7 @@ import { useRouter } from 'vue-router'
 import { useConfigStore } from '@/stores/config'
 import { useGatewayStore } from '@/stores/gateway'
 import { t } from '@/i18n'
+import { getModelIcon } from '@/lib/icons'
 
 const router = useRouter()
 const configStore = useConfigStore()
@@ -414,6 +416,15 @@ onMounted(async () => {
   cursor: pointer;
   transition: all 0.15s;
   position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.model-logo {
+  display: flex;
+  align-items: center;
+  margin-bottom: 4px;
 }
 
 .model-card:hover {

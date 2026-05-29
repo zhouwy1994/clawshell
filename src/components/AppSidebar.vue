@@ -45,6 +45,7 @@ const menuItems = [
   { icon: 'radio', labelKey: 'sidebar.channels', route: 'channels' },
   { icon: 'brain', labelKey: 'sidebar.models', route: 'models' },
   { icon: 'zap', labelKey: 'sidebar.skills', route: 'skills' },
+  { icon: 'calendar', labelKey: 'sidebar.schedules', route: 'schedules' },
   { icon: 'settings', labelKey: 'sidebar.settings', route: 'settings' },
 ]
 </script>

@@ -1,6 +1,6 @@
 {
   "name": "clawshell",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "虾壳 ClawShell — 面向普通用户的 AI 助手桌面客户端",
   "main": "electron/main.js",
   "author": "ClawShell",
@@ -19,7 +19,6 @@
     "adm-zip": "^0.5.17",
     "highlight.js": "^11.11.1",
     "markdown-it": "^14.1",
-    "openclaw": "2026.5.7",
     "pinia": "^3.0",
     "vue": "^3.5",
     "vue-router": "^4.5",

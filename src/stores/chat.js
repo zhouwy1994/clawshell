@@ -63,6 +63,66 @@ function normalizeMessage(msg) {
   return msg
 }
 
+function collectAttachmentPlaybackSources(message) {
+  if (!message || !Array.isArray(message.content)) return []
+  return message.content
+    .filter(block => block?.type === 'attachment' && block.attachment?.playbackUrl)
+    .map(block => ({
+      label: block.attachment.label || '',
+      playbackUrl: block.attachment.playbackUrl,
+      durationSeconds: block.attachment.durationSeconds || 0,
+      url: block.attachment.url || '',
+    }))
+}
+
+function buildAttachmentSignature(message) {
+  if (!message || !Array.isArray(message.content)) return ''
+  const text = resolveMessageText(message.content)
+  const attachments = message.content
+    .filter(block => block?.type === 'attachment' && block.attachment)
+    .map(block => `${block.attachment.label || ''}|${block.attachment.kind || ''}`)
+    .join('||')
+  return `${(message.role || '').toLowerCase()}::${text}::${attachments}`
+}
+
+function mergeLocalPlaybackSources(history, currentMessages) {
+  const sourceMap = new Map()
+
+  for (const message of currentMessages || []) {
+    const sources = collectAttachmentPlaybackSources(message)
+    if (sources.length === 0) continue
+    const key = buildAttachmentSignature(message)
+    if (!key) continue
+    const existing = sourceMap.get(key) || []
+    existing.push(sources)
+    sourceMap.set(key, existing)
+  }
+
+  return (history || []).map((message) => {
+    const key = buildAttachmentSignature(message)
+    const matchQueue = key ? sourceMap.get(key) : null
+    const matched = matchQueue?.length ? matchQueue.shift() : null
+    if (!matched || !Array.isArray(message.content)) return message
+
+    let playbackIndex = 0
+    const nextContent = message.content.map((block) => {
+      if (block?.type !== 'attachment' || !block.attachment) return block
+      const playback = matched[playbackIndex++]
+      if (!playback?.playbackUrl) return block
+      return {
+        ...block,
+        attachment: {
+          ...block.attachment,
+          playbackUrl: playback.playbackUrl,
+          durationSeconds: playback.durationSeconds || block.attachment.durationSeconds,
+        },
+      }
+    })
+
+    return { ...message, content: nextContent }
+  })
+}
+
 function formatToolOutput(value) {
   if (value === null || value === undefined) return null
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
@@ -83,6 +143,7 @@ function formatToolOutput(value) {
 
 export const useChatStore = defineStore('chat', () => {
   const gw = useGatewayClient()
+  let eventUnsubscribers = []
 
   // Sessions
   const sessions = ref([])
@@ -142,9 +203,9 @@ export const useChatStore = defineStore('chat', () => {
   // Actions
   async function connectToGateway() {
     try {
-      const status = await window.clawshell.getGatewayStatus()
-      if (status.ready && status.port) {
-        gw.connect(status.port, status.token || 'clawshell')
+      const status = await ipc.getGatewayStatus()
+      if (status.ready && (status.port || status.remoteUrl)) {
+        gw.connect(status.port, status.token || 'clawshell', status.remoteUrl || '')
       }
     } catch (e) {
       console.error('[chat] connect failed:', e)
@@ -242,9 +303,12 @@ export const useChatStore = defineStore('chat', () => {
         limit: 200,
       })
       const history = Array.isArray(res?.messages) ? res.messages : []
-      messages.value = history
+      messages.value = mergeLocalPlaybackSources(
+        history
         .map(normalizeMessage)
-        .filter(msg => !isAssistantSilentReply(msg))
+        .filter(msg => !isAssistantSilentReply(msg)),
+        messages.value,
+      )
       thinkingLevel.value = res?.thinkingLevel || 'off'
     } catch (e) {
       error.value = '加载历史消息失败: ' + (e.message || e)
@@ -253,20 +317,32 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  let historyLoadingPromise = null
+
   async function loadHistory() {
     if (!gw.connected.value || !currentSessionKey.value) return
-    try {
-      const res = await gw.request('chat.history', {
-        sessionKey: currentSessionKey.value,
-        limit: 200,
-      })
-      const history = Array.isArray(res?.messages) ? res.messages : []
-      messages.value = history
-        .map(normalizeMessage)
-        .filter(msg => !isAssistantSilentReply(msg))
-    } catch (e) {
-      console.error('[chat] reload history failed:', e)
-    }
+    // Deduplicate: if a loadHistory is already in-flight, wait for it instead of firing another
+    if (historyLoadingPromise) return historyLoadingPromise
+    historyLoadingPromise = (async () => {
+      try {
+        const res = await gw.request('chat.history', {
+          sessionKey: currentSessionKey.value,
+          limit: 200,
+        })
+        const history = Array.isArray(res?.messages) ? res.messages : []
+        messages.value = mergeLocalPlaybackSources(
+          history
+          .map(normalizeMessage)
+          .filter(msg => !isAssistantSilentReply(msg)),
+          messages.value,
+        )
+      } catch (e) {
+        console.error('[chat] reload history failed:', e)
+      } finally {
+        historyLoadingPromise = null
+      }
+    })()
+    return historyLoadingPromise
   }
 
   async function deleteSession(key) {
@@ -305,7 +381,16 @@ export const useChatStore = defineStore('chat', () => {
         if (att.mimeType && att.mimeType.startsWith('image/')) {
           userContent.push({ type: 'image', source: { type: 'base64', media_type: att.mimeType, data: att.dataUrl } })
         } else {
-          userContent.push({ type: 'attachment', attachment: { url: att.dataUrl, kind: 'document', label: att.fileName || 'file' } })
+          userContent.push({
+            type: 'attachment',
+            attachment: {
+              url: att.dataUrl,
+              playbackUrl: att.playbackUrl,
+              durationSeconds: att.durationSeconds,
+              kind: 'document',
+              label: att.fileName || 'file',
+            },
+          })
         }
       }
     }
@@ -326,6 +411,15 @@ export const useChatStore = defineStore('chat', () => {
           return { type, mimeType: mime, fileName: att.fileName, content }
         }).filter(Boolean)
       : undefined
+
+    if (apiAttachments?.length) {
+      console.debug('[chat-store] sending attachments', apiAttachments.map(att => ({
+        type: att.type,
+        mimeType: att.mimeType,
+        fileName: att.fileName,
+        contentLength: att.content?.length || 0,
+      })))
+    }
 
     const newRunId = crypto.randomUUID()
     runId.value = newRunId
@@ -443,9 +537,13 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function initEventListeners() {
+    if (eventUnsubscribers.length > 0) {
+      return disposeEventListeners
+    }
+
     // ── chat events: the ONLY source for message display ──
     // Matches official UI's handleChatEvent in controllers/chat.ts
-    gw.onEvent('chat', (payload) => {
+    eventUnsubscribers.push(gw.onEvent('chat', (payload) => {
       if (!payload || payload.sessionKey !== currentSessionKey.value) return
 
       // Final from another run (e.g. sub-agent): reload history
@@ -487,11 +585,11 @@ export const useChatStore = defineStore('chat', () => {
         toolMessages.value = []
         error.value = payload.errorMessage || 'chat error'
       }
-    })
+    }))
 
     // ── agent events: real-time tool stream ──
     // Matches official UI's handleAgentEvent in app-tool-stream.ts
-    gw.onEvent('agent', (payload) => {
+    eventUnsubscribers.push(gw.onEvent('agent', (payload) => {
       if (!payload) return
       if (payload.stream !== 'tool') return
 
@@ -540,10 +638,10 @@ export const useChatStore = defineStore('chat', () => {
           startedAt: typeof payload.ts === 'number' ? payload.ts : Date.now(),
         }]
       }
-    })
+    }))
 
     // ── session list updates ──
-    gw.onEvent('sessions.changed', (payload) => {
+    eventUnsubscribers.push(gw.onEvent('sessions.changed', (payload) => {
       if (!payload) return
       const key = payload.session?.key || payload.sessionKey || payload.key || ''
       if (!key) return
@@ -554,7 +652,16 @@ export const useChatStore = defineStore('chat', () => {
       } else {
         sessions.value = [{ key, ...payload.session }, ...sessions.value]
       }
-    })
+    }))
+
+    return disposeEventListeners
+  }
+
+  function disposeEventListeners() {
+    for (const unsubscribe of eventUnsubscribers) {
+      try { unsubscribe() } catch (e) { console.error('[chat] failed to remove listener:', e) }
+    }
+    eventUnsubscribers = []
   }
 
   return {
@@ -572,6 +679,6 @@ export const useChatStore = defineStore('chat', () => {
     sendMessage, abortGeneration,
     selectAgent, selectModel, setThinkingLevel,
     toggleSessionPanel,
-    initEventListeners,
+    initEventListeners, disposeEventListeners,
   }
 })
