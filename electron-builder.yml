@@ -15,6 +15,11 @@ files:
   - "!node_modules/**/tests/**"
   - "!node_modules/**/.cache"
 asar: false
+extraResources:
+  - from: resources/runtime
+    to: runtime
+    filter:
+      - "**/*"
 mac:
   category: public.app-category.productivity
   icon: assets/images/logo/clawshell_logo.png

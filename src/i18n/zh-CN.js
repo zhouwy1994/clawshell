@@ -102,6 +102,13 @@ export default {
   'setup.step0.downloading': '正在下载安装...',
   'setup.step0.downloadFailed': '下载失败，请重试',
   'setup.step0.downloadSuccess': '安装成功',
+  'setup.step0.nodeChecking': '检测 Node.js 环境...',
+  'setup.step0.nodeSystem': '系统',
+  'setup.step0.nodePortable': '内置',
+  'setup.step0.nodeTooLow': 'Node.js 版本过低',
+  'setup.step0.nodeNotFound': '未检测到 Node.js 环境，需要下载 Node.js 运行时',
+  'setup.step0.downloadNode': '下载 Node.js 运行时',
+  'setup.step0.downloadingNode': '正在下载 Node.js...',
 
   // Registry
   'settings.tab.registry': '软件源',
