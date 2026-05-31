@@ -36,6 +36,37 @@ jobs:
 
       - run: pnpm install
 
+      - name: Download Node.js portable runtime (latest LTS)
+        shell: bash
+        run: |
+          # 从 nodejs.org 获取最新 LTS 版本号（lts 字段为字符串的是 LTS，false 的是 Current）
+          NODE_VER=$(curl -sL https://nodejs.org/dist/index.json \
+            | python3 -c "import sys,json; data=json.load(sys.stdin); lts=[v['version'].lstrip('v') for v in data if v.get('lts')]; print(lts[0] if lts else '')")
+          if [ -z "$NODE_VER" ]; then
+            echo "ERROR: Failed to resolve latest Node.js LTS version"
+            exit 1
+          fi
+          echo "Latest Node.js LTS version: ${NODE_VER}"
+          mkdir -p resources/runtime
+          if [ "${{ matrix.platform }}" = "win" ]; then
+            echo "Downloading Node.js v${NODE_VER} for Windows x64..."
+            curl -sL "https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-win-x64.zip" -o /tmp/node.zip
+            unzip -q /tmp/node.zip -d /tmp/node-out
+            mv /tmp/node-out/node-v${NODE_VER}-win-x64 resources/runtime/node-win32-x64
+          elif [ "${{ matrix.platform }}" = "mac" ]; then
+            echo "Downloading Node.js v${NODE_VER} for macOS arm64..."
+            curl -sL "https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-darwin-arm64.tar.gz" -o /tmp/node.tar.gz
+            tar xzf /tmp/node.tar.gz -C /tmp/
+            mv "/tmp/node-v${NODE_VER}-darwin-arm64" resources/runtime/node-darwin-arm64
+          else
+            echo "Downloading Node.js v${NODE_VER} for Linux x64..."
+            curl -sL "https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-linux-x64.tar.xz" -o /tmp/node.tar.xz
+            tar xf /tmp/node.tar.xz -C /tmp/
+            mv "/tmp/node-v${NODE_VER}-linux-x64" resources/runtime/node-linux-x64
+          fi
+          echo "Bundled Node.js runtime:"
+          ls -la resources/runtime/
+
       - run: pnpm run electron:build -- --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

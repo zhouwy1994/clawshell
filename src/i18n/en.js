@@ -102,6 +102,13 @@ export default {
   'setup.step0.downloading': 'Downloading...',
   'setup.step0.downloadFailed': 'Download failed, please retry',
   'setup.step0.downloadSuccess': 'Installed successfully',
+  'setup.step0.nodeChecking': 'Checking Node.js environment...',
+  'setup.step0.nodeSystem': 'System',
+  'setup.step0.nodePortable': 'Bundled',
+  'setup.step0.nodeTooLow': 'Node.js version too low',
+  'setup.step0.nodeNotFound': 'Node.js not found. A runtime (≥ 22) is required.',
+  'setup.step0.downloadNode': 'Download Node.js Runtime',
+  'setup.step0.downloadingNode': 'Downloading Node.js...',
 
   // Registry
   'settings.tab.registry': 'Registry',

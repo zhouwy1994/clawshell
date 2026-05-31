@@ -51,6 +51,13 @@ let settingsCache = null;
 
 const isDev = process.argv.includes('--dev');
 
+/**
+ * 调试日志，输出到控制台
+ */
+function log(msg) {
+  console.log(msg);
+}
+
 function resolveDataDir() {
   const envDir = process.env.CLAWSHELL_HOME;
   if (envDir && envDir.trim()) {
@@ -120,6 +127,13 @@ function getOpenClawEnv() {
   };
   if (settings.registry?.npm) {
     env.NPM_CONFIG_REGISTRY = settings.registry.npm;
+  }
+  // 将 Node.js 所在目录注入 PATH，确保 npm/npx 等子进程能找到 node
+  // 无论是便携版还是 bundled，都取 getNodeBin() 的目录加入 PATH
+  const nodeBin = getNodeBin();
+  if (nodeBin && nodeBin !== 'node') {
+    const nodeDir = path.dirname(nodeBin);
+    env.PATH = `${nodeDir}${path.delimiter}${env.PATH || ''}`;
   }
   return env;
 }
@@ -220,33 +234,108 @@ async function resolveChannelPluginInstallSpec(installCmd, env, cwd) {
 // ═══════════════════════════════════════════════════════════════
 // 1. 独立 Node.js 运行时
 // ═══════════════════════════════════════════════════════════════
-function getNodeBin() {
+
+const NODE_MINIMUM_VERSION = 22;
+
+/**
+ * 查找便携版 Node.js 的根目录。
+ * 搜索优先级：
+ *   1. ~/.clawshell/bin/        — 运行时下载或安装包内置
+ *   2. ~/.openclaw/bin/         — 用户已有 openclaw 便携版
+ * 返回包含 node 可执行文件的目录路径，找不到则返回 null。
+ */
+function getPortableNodeDir() {
+  const dataDir = resolveDataDir();
+  const dirs = [
+    path.join(dataDir, 'bin'),                         // ~/.clawshell/bin
+    path.join(os.homedir(), '.openclaw', 'bin'),       // ~/.openclaw/bin
+  ];
+  for (const dir of dirs) {
+    const nodeBin = process.platform === 'win32'
+      ? path.join(dir, 'node.exe')
+      : path.join(dir, 'bin', 'node');
+    log(`[${APP_NAME}] Checking portable node: ${nodeBin} → ${fs.existsSync(nodeBin)}`);
+    if (fs.existsSync(nodeBin)) return dir;
+  }
+  return null;
+}
+
+/**
+ * 获取打包在 app 中的 Node.js 运行时目录。
+ *
+ * 路径推导（所有平台通用）：
+ *   main.js 位于: <app>/resources/app/electron/main.js
+ *   __dirname  = <app>/resources/app/electron/
+ *   ../..      = <app>/resources/
+ *   extraResources.to=runtime → <app>/resources/runtime/node-{platform}-{arch}/
+ *
+ *   macOS DMG:  /Applications/ClawShell.app/Contents/Resources/runtime/node-darwin-arm64/bin/node
+ *   Linux deb:  /opt/ClawShell/resources/runtime/node-linux-x64/bin/node
+ *   Win NSIS:   C:\...\clawshell\resources\runtime\node-win32-x64\node.exe
+ *   Portable:   %TEMP%\...\resources\runtime\node-win32-x64\node.exe
+ */
+function getBundledNodeDir() {
   const platform = process.platform;
   const arch = process.arch;
-  const nodeDir = isDev
-    ? path.join(__dirname, '..', 'resources', 'runtime', `node-${platform}-${arch}`)
-    : path.join(process.resourcesPath, 'resources', 'runtime', `node-${platform}-${arch}`);
-  const nodeBin = platform === 'win32'
+  const suffix = `node-${platform}-${arch}`;
+  if (isDev) {
+    return path.join(__dirname, '..', 'resources', 'runtime', suffix);
+  }
+  return path.join(__dirname, '..', '..', 'runtime', suffix);
+}
+
+function getNodeBin() {
+  log(`[${APP_NAME}] === getNodeBin() ===`);
+  log(`[${APP_NAME}] platform=${process.platform}, arch=${process.arch}, isDev=${isDev}`);
+  log(`[${APP_NAME}] __dirname=${__dirname}`);
+  log(`[${APP_NAME}] process.resourcesPath=${process.resourcesPath}`);
+
+  // 1. 便携版 Node（~/.clawshell/bin 或 ~/.openclaw/bin）
+  const portableDir = getPortableNodeDir();
+  if (portableDir) {
+    const nodeBin = process.platform === 'win32'
+      ? path.join(portableDir, 'node.exe')
+      : path.join(portableDir, 'bin', 'node');
+    log(`[${APP_NAME}] → [portable] ${nodeBin} found`);
+    return nodeBin;
+  }
+
+  // 2. 打包在 app 中的运行时
+  const nodeDir = getBundledNodeDir();
+  const bundledNode = process.platform === 'win32'
     ? path.join(nodeDir, 'node.exe')
     : path.join(nodeDir, 'bin', 'node');
-  if (fs.existsSync(nodeBin)) return nodeBin;
+  log(`[${APP_NAME}] → [bundled]  dir=${nodeDir}, bin=${bundledNode}, exists=${fs.existsSync(bundledNode)}`);
+  if (fs.existsSync(bundledNode)) return bundledNode;
+
+  // 3. 系统 PATH
+  log(`[${APP_NAME}] → [system]   falling back to 'node' in PATH`);
   return 'node';
 }
 
 function getNpmBin() {
-  const platform = process.platform;
-  const arch = process.arch;
-  const nodeDir = isDev
-    ? path.join(__dirname, '..', 'resources', 'runtime', `node-${platform}-${arch}`)
-    : path.join(process.resourcesPath, 'resources', 'runtime', `node-${platform}-${arch}`);
-  if (platform === 'win32') {
+  // 1. 便携版 npm
+  const portableDir = getPortableNodeDir();
+  if (portableDir) {
+    if (process.platform === 'win32') {
+      const npmCmd = path.join(portableDir, 'npm.cmd');
+      if (fs.existsSync(npmCmd)) return npmCmd;
+    } else {
+      const npmBin = path.join(portableDir, 'bin', 'npm');
+      if (fs.existsSync(npmBin)) return npmBin;
+    }
+  }
+  // 2. 打包在 app 中的运行时
+  const nodeDir = getBundledNodeDir();
+  if (process.platform === 'win32') {
     const npmCmd = path.join(nodeDir, 'npm.cmd');
     if (fs.existsSync(npmCmd)) return npmCmd;
   } else {
     const npmBin = path.join(nodeDir, 'bin', 'npm');
     if (fs.existsSync(npmBin)) return npmBin;
   }
-  return platform === 'win32' ? 'npm.cmd' : 'npm';
+  // 3. 系统 PATH
+  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -801,6 +890,260 @@ function downloadToFile(url, destPath) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 9b. Node.js 环境检测 & 便携版安装
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * 执行 node --version 并返回解析后的版本号，失败返回 null。
+ */
+function queryNodeVersion(nodePath) {
+  return new Promise((resolve) => {
+    try {
+      const proc = spawn(nodePath, ['--version'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      let stdout = '';
+      proc.stdout.on('data', (d) => { stdout += d.toString(); });
+      proc.on('exit', (code) => {
+        if (code === 0) {
+          const match = stdout.trim().match(/^v?(\d+)\.(\d+)\.(\d+)/);
+          resolve(match ? `${match[1]}.${match[2]}.${match[3]}` : null);
+        } else {
+          resolve(null);
+        }
+      });
+      proc.on('error', () => resolve(null));
+      setTimeout(() => { proc.kill(); resolve(null); }, 5000);
+    } catch { resolve(null); }
+  });
+}
+
+/**
+ * 检查 Node.js 环境。
+ * 返回 { found, path, version, meetsMinimum, source }
+ * source: 'system' | 'portable-clawshell' | 'portable-openclaw' | null
+ */
+async function checkNodeEnvironment() {
+  log(`[${APP_NAME}] === checkNodeEnvironment() ===`);
+  // 1. 检查便携版 ~/.clawshell/bin
+  const dataDir = resolveDataDir();
+  const clawshellBinDir = path.join(dataDir, 'bin');
+  const clawshellNodePath = process.platform === 'win32'
+    ? path.join(clawshellBinDir, 'node.exe')
+    : path.join(clawshellBinDir, 'bin', 'node');
+
+  log(`[${APP_NAME}] [1] portable-clawshell: ${clawshellNodePath} → ${fs.existsSync(clawshellNodePath)}`);
+  if (fs.existsSync(clawshellNodePath)) {
+    const version = await queryNodeVersion(clawshellNodePath);
+    if (version) {
+      const major = parseInt(version.split('.')[0], 10);
+      log(`[${APP_NAME}] [1] found v${version}, meetsMinimum=${major >= NODE_MINIMUM_VERSION}`);
+      return { found: true, path: clawshellNodePath, version, meetsMinimum: major >= NODE_MINIMUM_VERSION, source: 'portable-clawshell' };
+    }
+  }
+
+  // 2. 检查便携版 ~/.openclaw/bin
+  const openclawBinDir = path.join(os.homedir(), '.openclaw', 'bin');
+  const openclawNodePath = process.platform === 'win32'
+    ? path.join(openclawBinDir, 'node.exe')
+    : path.join(openclawBinDir, 'bin', 'node');
+
+  log(`[${APP_NAME}] [2] portable-openclaw: ${openclawNodePath} → ${fs.existsSync(openclawNodePath)}`);
+  if (fs.existsSync(openclawNodePath)) {
+    const version = await queryNodeVersion(openclawNodePath);
+    if (version) {
+      const major = parseInt(version.split('.')[0], 10);
+      log(`[${APP_NAME}] [2] found v${version}, meetsMinimum=${major >= NODE_MINIMUM_VERSION}`);
+      return { found: true, path: openclawNodePath, version, meetsMinimum: major >= NODE_MINIMUM_VERSION, source: 'portable-openclaw' };
+    }
+  }
+
+  // 3. 检查系统 PATH
+  const sysVersion = await queryNodeVersion('node');
+  log(`[${APP_NAME}] [3] system node → version=${sysVersion}`);
+  if (sysVersion) {
+    const major = parseInt(sysVersion.split('.')[0], 10);
+    return { found: true, path: 'node', version: sysVersion, meetsMinimum: major >= NODE_MINIMUM_VERSION, source: 'system' };
+  }
+
+  // 4. 检查打包在 app 中的运行时（resources/runtime/node-{platform}-{arch}/）
+  const bundledDir = getBundledNodeDir();
+  const bundledPath = process.platform === 'win32'
+    ? path.join(bundledDir, 'node.exe')
+    : path.join(bundledDir, 'bin', 'node');
+  log(`[${APP_NAME}] [4] bundled: ${bundledPath} → ${fs.existsSync(bundledPath)}`);
+  if (fs.existsSync(bundledPath)) {
+    const version = await queryNodeVersion(bundledPath);
+    if (version) {
+      const major = parseInt(version.split('.')[0], 10);
+      log(`[${APP_NAME}] [4] found v${version}, meetsMinimum=${major >= NODE_MINIMUM_VERSION}`);
+      return { found: true, path: bundledPath, version, meetsMinimum: major >= NODE_MINIMUM_VERSION, source: 'bundled' };
+    }
+  }
+
+  log(`[${APP_NAME}] No Node.js found in any location`);
+  return { found: false, path: null, version: null, meetsMinimum: false, source: null };
+}
+
+/**
+ * 获取 Node.js 最新 LTS 版本号。
+ * 优先从 npmmirror 获取，失败回退 nodejs.org，再失败使用硬编码版本。
+ */
+async function getLatestNodeLTSVersion() {
+  const sources = [
+    'https://npmmirror.com/mirrors/node/index.json',
+    'https://nodejs.org/dist/index.json',
+  ];
+  for (const src of sources) {
+    try {
+      const version = await new Promise((resolve, reject) => {
+        const client = src.startsWith('https') ? https : http;
+        const req = client.get(src, { timeout: 10000 }, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try {
+              const versions = JSON.parse(data);
+              const lts = versions.find(v => v.lts !== false && v.lts !== '');
+              resolve(lts ? lts.version.replace(/^v/, '') : null);
+            } catch { resolve(null); }
+          });
+        });
+        req.on('error', reject);
+        req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
+      });
+      if (version) return version;
+    } catch { /* try next source */ }
+  }
+  // 最终回退
+  return '22.16.0';
+}
+
+/**
+ * 将 src 目录下所有内容移动到 dest 目录。
+ */
+function moveDirContents(src, dest) {
+  if (!fs.existsSync(src)) return;
+  const entries = fs.readdirSync(src);
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry);
+    const destPath = path.join(dest, entry);
+    try {
+      fs.renameSync(srcPath, destPath);
+    } catch {
+      // 跨设备或文件占用，回退到 copy + delete
+      fs.cpSync(srcPath, destPath, { recursive: true, force: true });
+      try { fs.rmSync(srcPath, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * 发送 Node.js 安装进度事件到渲染进程。
+ */
+function sendNodeProgress(percent, phase) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('node-install-progress', { percent, phase });
+  }
+}
+
+/**
+ * 下载并安装便携版 Node.js 到 ~/.clawshell/bin/。
+ */
+async function installPortableNode() {
+  const dataDir = resolveDataDir();
+  const binDir = path.join(dataDir, 'bin');
+  const platform = process.platform;
+  const arch = process.arch;
+
+  // 解析架构映射
+  const archMap = { x64: 'x64', arm64: 'arm64', ia32: 'x86' };
+  const nodeArch = archMap[arch] || arch;
+  const osName = platform === 'win32' ? 'win' : platform === 'darwin' ? 'darwin' : 'linux';
+
+  // 获取最新 LTS 版本
+  sendNodeProgress(2, 'resolving');
+  const version = await getLatestNodeLTSVersion();
+  console.log(`[${APP_NAME}] Installing portable Node.js v${version} for ${osName}-${nodeArch}`);
+
+  // 构建下载 URL 和文件名
+  const archiveName = `node-v${version}-${osName}-${nodeArch}`;
+  const ext = platform === 'win32' ? '.zip' : '.tar.gz';
+  const urls = [
+    `https://npmmirror.com/mirrors/node/v${version}/${archiveName}${ext}`,
+    `https://nodejs.org/dist/v${version}/${archiveName}${ext}`,
+  ];
+
+  const tmpDir = path.join(os.tmpdir(), `clawshell-node-install-${Date.now()}`);
+  const archivePath = path.join(tmpDir, `${archiveName}${ext}`);
+
+  fs.mkdirSync(tmpDir, { recursive: true });
+  fs.mkdirSync(binDir, { recursive: true });
+
+  // 下载：依次尝试多个源
+  sendNodeProgress(5, 'downloading');
+  let downloaded = false;
+  for (const url of urls) {
+    try {
+      console.log(`[${APP_NAME}] Downloading Node.js from ${url}`);
+      await downloadToFile(url, archivePath);
+      downloaded = true;
+      break;
+    } catch (e) {
+      console.warn(`[${APP_NAME}] Download from ${url} failed: ${e.message}`);
+      // 清理失败的临时文件
+      try { fs.unlinkSync(archivePath); } catch { /* ignore */ }
+    }
+  }
+  if (!downloaded) {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    return { ok: false, error: '无法下载 Node.js，请检查网络连接' };
+  }
+
+  sendNodeProgress(50, 'extracting');
+
+  // 解压
+  try {
+    if (platform === 'win32') {
+      const zip = new AdmZip(archivePath);
+      zip.extractAllTo(tmpDir, true);
+    } else {
+      await new Promise((resolve, reject) => {
+        const tar = spawn('tar', ['-xf', archivePath, '-C', tmpDir], { stdio: 'pipe' });
+        tar.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`tar exited with code ${code}`)));
+        tar.on('error', reject);
+      });
+    }
+  } catch (e) {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    return { ok: false, error: `解压失败: ${e.message}` };
+  }
+
+  // 将解压后的 node-v22.x.x-xxx/ 内容移入 ~/.clawshell/bin/
+  const extractedDir = path.join(tmpDir, archiveName);
+  if (!fs.existsSync(extractedDir)) {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    return { ok: false, error: '解压后的目录结构异常' };
+  }
+
+  sendNodeProgress(85, 'installing');
+  moveDirContents(extractedDir, binDir);
+
+  // 清理临时文件
+  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
+  // 验证安装结果
+  const nodeBin = getNodeBin();
+  const versionCheck = await queryNodeVersion(nodeBin);
+  if (!versionCheck) {
+    return { ok: false, error: '安装完成但 node 不可用' };
+  }
+
+  sendNodeProgress(100, 'done');
+  console.log(`[${APP_NAME}] Portable Node.js v${versionCheck} installed at ${nodeBin}`);
+
+  return { ok: true, path: nodeBin, version: versionCheck };
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 10. Gateway 配置保障
 //     确保 control-ui 客户端免设备认证、允许渲染进程直连
 // ═══════════════════════════════════════════════════════════════
@@ -828,11 +1171,7 @@ function ensureDeviceAuthDisabled() {
       console.log(`[${APP_NAME}] Set gateway.controlUi.allowInsecureAuth = true`);
     }
 
-    // 允许渲染进程的 origin 直连 gateway
-    // 开发模式: http://localhost:5173
-    // 生产模式: Electron file:// 页面的 origin 是 "null"，gateway parseOrigin
-    //   会返回 null 导致 origin check 失败；此时需要 host-header fallback
-    const devOrigin = 'http://localhost:5173';
+    const devOrigin = '*';
     const origins = config.gateway?.controlUi?.allowedOrigins || [];
     if (!origins.includes(devOrigin)) {
       if (!config.gateway) config.gateway = {};
@@ -1631,9 +1970,11 @@ ${agentData.skills}
           setCurrentCoreLink(resolvedVersion, versionDir);
           resolve({ ok: true, version: resolvedVersion, stdout, stderr });
         } else {
+          const errDetail = stderr.trim().slice(-500) || stdout.trim().slice(-500);
           console.error(`[${APP_NAME}] npm install failed: code=${code}, stderr="${stderr.slice(0, 500)}"`);
+          log(`[${APP_NAME}] npm install failed: code=${code}, last 500 chars: ${errDetail}`);
           sendProgress(0, 'failed');
-          resolve({ ok: false, error: `npm install failed with code ${code}`, stdout, stderr });
+          resolve({ ok: false, error: `npm install failed (code ${code}): ${errDetail}`, stdout, stderr });
         }
       });
 
@@ -1647,6 +1988,16 @@ ${agentData.skills}
 
   ipcMain.handle('has-openclaw-core', () => {
     return getOpenClawEntry() !== null;
+  });
+
+  // ── Node.js 环境检测 & 便携版安装 ──
+
+  ipcMain.handle('check-node-environment', async () => {
+    return checkNodeEnvironment();
+  });
+
+  ipcMain.handle('install-portable-node', async () => {
+    return installPortableNode();
   });
 
   ipcMain.handle('list-openclaw-versions', () => {

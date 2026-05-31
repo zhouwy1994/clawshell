@@ -76,6 +76,15 @@ contextBridge.exposeInMainWorld('clawshell', {
   upgradeOpenClaw: (version) => ipcRenderer.invoke('upgrade-openclaw', version),
   getOpenClawAvailableVersions: () => ipcRenderer.invoke('get-openclaw-available-versions'),
 
+  // ── Node.js 环境检测 & 便携版安装 ──
+  checkNodeEnvironment: () => ipcRenderer.invoke('check-node-environment'),
+  installPortableNode: () => ipcRenderer.invoke('install-portable-node'),
+  onNodeInstallProgress: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('node-install-progress', handler);
+    return () => ipcRenderer.removeListener('node-install-progress', handler);
+  },
+
   onCoreInstallProgress: (callback) => {
     const handler = (_, data) => callback(data);
     ipcRenderer.on('core-install-progress', handler);

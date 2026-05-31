@@ -64,24 +64,44 @@
           </div>
           <!-- Local mode: core status -->
           <div v-if="connectionMode === 'local'" class="core-status">
-            <div v-if="coreChecking" class="core-checking">...</div>
-            <div v-else-if="coreInstalled" class="core-ok">
-              <span class="core-icon">✅</span>
-              <span>{{ t('setup.step0.coreInstalled') }}</span>
-            </div>
-            <div v-else class="core-missing">
-              <p>{{ t('setup.step0.coreNotInstalled') }}</p>
-              <button
-                v-if="!coreInstalling"
-                class="btn-download"
-                @click="downloadCore"
-              >{{ t('setup.step0.downloadCore') }}</button>
-              <div v-else class="download-progress">
-                <div class="progress-bar"><div class="progress-fill"></div></div>
-                <span>{{ t('setup.step0.downloading') }}</span>
+            <!-- Node.js 环境检测（仅在未检测到时显示，正常情况安装包已内置） -->
+            <template v-if="!nodeChecking && nodeStatus && !nodeStatus.meetsMinimum">
+              <div class="core-missing">
+                <p>{{ nodeStatus.found ? `${t('setup.step0.nodeTooLow')} (v${nodeStatus.version}, ≥ 22)` : t('setup.step0.nodeNotFound') }}</p>
+                <button
+                  v-if="!nodeInstalling"
+                  class="btn-download"
+                  @click="downloadNode"
+                >{{ t('setup.step0.downloadNode') }}</button>
+                <div v-else class="download-progress">
+                  <div class="progress-bar"><div class="progress-fill"></div></div>
+                  <span>{{ t('setup.step0.downloadingNode') }}</span>
+                </div>
+                <p v-if="nodeInstallError" class="core-error">{{ nodeInstallError }}</p>
               </div>
-              <p v-if="coreInstallError" class="core-error">{{ coreInstallError }}</p>
-            </div>
+            </template>
+
+            <!-- OpenClaw 核心 (Node.js 就绪时才显示) -->
+            <template v-if="nodeStatus?.meetsMinimum">
+              <div v-if="coreChecking" class="core-checking">...</div>
+              <div v-else-if="coreInstalled" class="core-ok">
+                <span class="core-icon">✅</span>
+                <span>{{ t('setup.step0.coreInstalled') }}</span>
+              </div>
+              <div v-else class="core-missing">
+                <p>{{ t('setup.step0.coreNotInstalled') }}</p>
+                <button
+                  v-if="!coreInstalling"
+                  class="btn-download"
+                  @click="downloadCore"
+                >{{ t('setup.step0.downloadCore') }}</button>
+                <div v-else class="download-progress">
+                  <div class="progress-bar"><div class="progress-fill"></div></div>
+                  <span>{{ t('setup.step0.downloading') }}</span>
+                </div>
+                <p v-if="coreInstallError" class="core-error">{{ coreInstallError }}</p>
+              </div>
+            </template>
           </div>
           <!-- Remote mode: connection fields -->
           <div v-if="connectionMode === 'remote'" class="remote-fields">
@@ -222,6 +242,11 @@ const coreInstalled = ref(false)
 const coreInstalling = ref(false)
 const coreInstallError = ref('')
 
+const nodeStatus = ref(null) // { found, version, meetsMinimum, source }
+const nodeChecking = ref(false)
+const nodeInstalling = ref(false)
+const nodeInstallError = ref('')
+
 // Built-in avatars (shared utility)
 const AVATARS = ref([])
 onMounted(async () => {
@@ -268,7 +293,17 @@ async function onAvatarFileChange(event) {
   event.target.value = ''
 }
 
-async function checkCore() {
+async function checkEnvironment() {
+  // 1. Check Node.js
+  nodeChecking.value = true
+  try {
+    nodeStatus.value = await ipc.checkNodeEnvironment()
+  } catch {
+    nodeStatus.value = { found: false, meetsMinimum: false }
+  }
+  nodeChecking.value = false
+
+  // 2. Check OpenClaw Core
   coreChecking.value = true
   try {
     coreInstalled.value = await ipc.hasOpenClawCore()
@@ -276,6 +311,23 @@ async function checkCore() {
     coreInstalled.value = false
   }
   coreChecking.value = false
+}
+
+async function downloadNode() {
+  nodeInstalling.value = true
+  nodeInstallError.value = ''
+  try {
+    const result = await ipc.installPortableNode()
+    if (result.ok) {
+      // Re-check environment to update nodeStatus
+      nodeStatus.value = await ipc.checkNodeEnvironment()
+    } else {
+      nodeInstallError.value = result.error || t('setup.step0.downloadFailed')
+    }
+  } catch (e) {
+    nodeInstallError.value = e.message || t('setup.step0.downloadFailed')
+  }
+  nodeInstalling.value = false
 }
 
 async function downloadCore() {
@@ -294,7 +346,7 @@ async function downloadCore() {
   coreInstalling.value = false
 }
 
-checkCore()
+checkEnvironment()
 
 const stepSubtitle = computed(() => {
   if (step.value === 0) return t('setup.step0.subtitle')
@@ -338,7 +390,7 @@ const activePreset = computed(() => PRESETS.value.find(p => p.id === selectedMod
 const canNext = computed(() => {
   if (step.value === 0) {
     if (connectionMode.value === 'remote') return !!remoteUrl.value
-    return coreInstalled.value
+    return coreInstalled.value && nodeStatus.value?.meetsMinimum
   }
   if (step.value === 1) {
     if (isCustomSelected.value) return !!(customBase.value.trim() && customModel.value.trim() && apiKey.value.trim())
