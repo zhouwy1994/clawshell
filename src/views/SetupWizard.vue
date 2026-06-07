@@ -37,7 +37,7 @@
         <div class="step-line" :class="{ done: step > 1 }"></div>
         <div class="step" :class="{ active: step === 2, done: step > 2 }">
           <span class="step-num">{{ step > 2 ? '✓' : '3' }}</span>
-          <span class="step-label">{{ t('setup.stepEmployee.title') }}</span>
+          <span class="step-label">{{ t('setup.stepAssistants.title') }}</span>
         </div>
         <div class="step-line" :class="{ done: step > 2 }"></div>
         <div class="step" :class="{ active: step === 3 }">
@@ -157,14 +157,14 @@
           </div>
         </div>
 
-        <!-- Step 2: Employee #1 -->
-        <div v-if="step === 2" class="step-content employee-step">
-          <p>{{ t('setup.stepEmployee.subtitle') }}</p>
+        <!-- Step 2: Assistants #1 -->
+        <div v-if="step === 2" class="step-content assistants-step">
+          <p>{{ t('setup.stepAssistants.subtitle') }}</p>
           <AgentPersonaForm
             ref="personaFormRef"
             v-model="emp"
             :avatar-list="AVATARS"
-            i18n-prefix="setup.employee"
+            i18n-prefix="setup.assistants"
             @request-avatar-upload="triggerAvatarUpload"
           />
         </div>
@@ -204,6 +204,8 @@ import { useUiStore } from '@/stores/ui'
 import AgentPersonaForm from '@/components/AgentPersonaForm.vue'
 import { loadAvatarDataUrls } from '@/lib/avatars'
 import { processAvatarFile } from '@/lib/avatar-upload'
+import { createPersona, normalizePersona } from '@/lib/agent-persona'
+import { generateSoulMd, generateIdentityMd, generateUserMd } from '@/lib/agent-md-generator'
 
 const locale = currentLocale
 const uiStore = useUiStore()
@@ -253,31 +255,8 @@ onMounted(async () => {
   AVATARS.value = await loadAvatarDataUrls()
 })
 
-// Employee data — all empty, placeholders serve as examples
-let emp = reactive({
-  name: '',
-  gender: '',
-  age: '',
-  id: 'main',
-  role: '',
-  duty: '',
-  dept: '',
-  callMe: '',
-  myRelation: '',
-  othersRelation: '',
-  charm: '',
-  style: '',
-  motto: '',
-  skills: '',
-  weakness: '',
-  attitude: '',
-  principle: '',
-  hobby: '',
-  dislike: '',
-  credo: '',
-  report: '',
-  avatar: '',
-})
+// Assistants data — all empty, placeholders serve as examples
+let emp = reactive(createPersona({ id: 'main' }))
 
 const avatarFileRef = ref(null)
 
@@ -437,29 +416,14 @@ async function finish() {
   await configStore.saveModelConfig(providerId, baseUrl, modelId, apiKey.value.trim(), null, apiType)
 
   // Save agent workspace files
+  const persona = normalizePersona(emp, { id: 'main' })
   await ipc.saveAgentWorkspace({
-    name: emp.name,
-    gender: emp.gender,
-    age: emp.age,
-    id: emp.id,
-    role: emp.role,
-    duty: emp.duty,
-    dept: emp.dept,
-    callMe: emp.callMe,
-    myRelation: emp.myRelation,
-    othersRelation: emp.othersRelation,
-    charm: emp.charm,
-    style: emp.style,
-    motto: emp.motto,
-    skills: emp.skills,
-    weakness: emp.weakness,
-    attitude: emp.attitude,
-    principle: emp.principle,
-    hobby: emp.hobby,
-    dislike: emp.dislike,
-    credo: emp.credo,
-    report: emp.report,
-    avatar: emp.avatar,
+    ...persona,
+    files: {
+      SOUL: generateSoulMd(persona),
+      IDENTITY: generateIdentityMd(persona),
+      USER: generateUserMd(persona),
+    },
   })
 
   // Show gateway starting overlay
@@ -886,8 +850,8 @@ async function finish() {
   text-align: left;
 }
 
-/* Employee step (Step 2) — tabbed */
-.employee-step {
+/* Assistants step (Step 2) — tabbed */
+.assistants-step {
   align-items: stretch !important;
   max-width: 520px;
   width: 100%;

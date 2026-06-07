@@ -1,26 +1,28 @@
 <template>
   <div class="persona-form">
-    <div class="emp-tabs">
+    <div class="role-tabs">
       <button
-        v-for="tab in EMP_TABS"
-        :key="tab.key"
-        class="emp-tab"
-        :class="{ active: empTab === tab.key }"
-        @click="empTab = tab.key"
-      >{{ tab.label }}</button>
+        v-for="role in ROLE_DEFS"
+        :key="role.key"
+        class="role-tab"
+        :class="{ active: emp.roleType === role.key }"
+        type="button"
+        @click="selectRole(role.key)"
+      >
+        {{ role.label }}
+      </button>
     </div>
 
-    <!-- Tab: Basic Profile -->
-    <div v-if="empTab === 'basic'" class="emp-panel">
-      <div class="emp-basic-row">
-        <div v-if="showAvatar" class="emp-avatar-col">
-          <label class="emp-avatar-label">{{ pKey('avatar') }} <span class="required">*</span></label>
-          <div class="emp-avatar-preview" :class="{ 'has-error': tried && !emp.avatar }" @click="showAvatarPicker = !showAvatarPicker">
+    <div class="persona-panel">
+      <div class="persona-basic-row">
+        <div v-if="showAvatar" class="avatar-col">
+          <label class="avatar-label">{{ pKey('avatar') }} <span class="required">*</span></label>
+          <div class="avatar-preview" :class="{ 'has-error': tried && !emp.avatar }" @click="showAvatarPicker = !showAvatarPicker">
             <img v-if="emp.avatar" :src="emp.avatar" alt="avatar" />
-            <span v-else class="emp-avatar-placeholder">📷</span>
+            <span v-else class="avatar-placeholder">📷</span>
           </div>
           <span v-if="tried && !emp.avatar" class="field-error">{{ pKey('avatar') }}</span>
-          <button class="emp-avatar-btn" @click="$emit('request-avatar-upload')">{{ pKey('avatarUpload') }}</button>
+          <button class="avatar-btn" type="button" @click="$emit('request-avatar-upload')">{{ pKey('avatarUpload') }}</button>
           <div v-if="showAvatarPicker" class="avatar-picker">
             <div class="avatar-grid">
               <img
@@ -34,8 +36,9 @@
             </div>
           </div>
         </div>
-        <div class="emp-basic-fields" :class="{ 'no-avatar': !showAvatar }">
-          <div class="emp-field-row">
+
+        <div class="persona-fields" :class="{ 'no-avatar': !showAvatar }">
+          <div class="field-row">
             <div class="form-group" :class="{ 'has-error': tried && !emp.name.trim() }">
               <label>{{ pKey('name') }} <span class="required">*</span></label>
               <input v-model="emp.name" :placeholder="pKey('namePlaceholder')" maxlength="20" :disabled="disabled" />
@@ -47,12 +50,13 @@
               <span v-if="tried && !emp.id.trim()" class="field-error">{{ pKey('id') }}</span>
             </div>
           </div>
-          <div class="emp-field-row">
+
+          <div class="field-row">
             <div class="form-group" :class="{ 'has-error': tried && !emp.gender }">
               <label>{{ pKey('gender') }} <span class="required">*</span></label>
               <div class="gender-group">
-                <button class="gender-btn" :class="{ active: emp.gender === '女' }" @click="emp.gender = '女'" :disabled="disabled">{{ pKey('genderFemale') }}</button>
-                <button class="gender-btn" :class="{ active: emp.gender === '男' }" @click="emp.gender = '男'" :disabled="disabled">{{ pKey('genderMale') }}</button>
+                <button class="gender-btn" type="button" :class="{ active: emp.gender === '女' }" @click="emp.gender = '女'" :disabled="disabled">{{ pKey('genderFemale') }}</button>
+                <button class="gender-btn" type="button" :class="{ active: emp.gender === '男' }" @click="emp.gender = '男'" :disabled="disabled">{{ pKey('genderMale') }}</button>
               </div>
               <span v-if="tried && !emp.gender" class="field-error">{{ pKey('genderRequired') }}</span>
             </div>
@@ -63,98 +67,41 @@
               <span v-else-if="tried && (Number(emp.age) < 1 || Number(emp.age) > 100)" class="field-error">1~100</span>
             </div>
           </div>
-          <div class="emp-field-row">
-            <div class="form-group">
-              <label>{{ pKey('role') }}</label>
-              <input v-model="emp.role" :placeholder="pKey('rolePlaceholder')" maxlength="20" :disabled="disabled" />
-            </div>
-            <div class="form-group">
-              <label>{{ pKey('dept') }}</label>
-              <input v-model="emp.dept" :placeholder="pKey('deptPlaceholder')" maxlength="50" :disabled="disabled" />
-            </div>
-          </div>
-          <div class="form-group full">
-            <label>{{ pKey('duty') }}</label>
-            <input v-model="emp.duty" :placeholder="pKey('dutyPlaceholder')" maxlength="200" :disabled="disabled" />
+
+          <div class="form-group" :class="{ 'has-error': tried && !emp.callMe.trim() }">
+            <label>{{ pKey('callMe') }} <span class="required">*</span></label>
+            <input v-model="emp.callMe" :placeholder="roleField('callMePlaceholder')" maxlength="30" :disabled="disabled" />
+            <span v-if="tried && !emp.callMe.trim()" class="field-error">{{ pKey('callMe') }}</span>
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- Tab: Relationships -->
-    <div v-if="empTab === 'relation'" class="emp-panel">
-      <div class="form-group" :class="{ 'has-error': tried && !emp.callMe.trim() }">
-        <label>{{ pKey('callMe') }} <span class="required">*</span></label>
-        <input v-model="emp.callMe" :placeholder="pKey('callMePlaceholder')" :disabled="disabled" />
-        <span v-if="tried && !emp.callMe.trim()" class="field-error">{{ pKey('callMe') }}</span>
+      <div class="role-fields">
+        <div
+          v-for="field in activeRole.fields"
+          :key="field.model"
+          class="form-group"
+          :class="{ full: field.full }"
+        >
+          <label>{{ field.label }}</label>
+          <input
+            v-model="emp[field.model]"
+            :placeholder="field.placeholder"
+            :maxlength="field.maxlength || 120"
+            :disabled="disabled"
+          />
+        </div>
       </div>
-      <div class="form-group">
-        <label>{{ pKey('myRelation') }}</label>
-        <input v-model="emp.myRelation" :placeholder="pKey('myRelationPlaceholder')" maxlength="200" :disabled="disabled" />
-      </div>
-      <div class="form-group">
-        <label>{{ pKey('othersRelation') }}</label>
-        <input v-model="emp.othersRelation" :placeholder="pKey('othersRelationPlaceholder')" maxlength="200" :disabled="disabled" />
-      </div>
-    </div>
 
-    <!-- Tab: Personality & Style -->
-    <div v-if="empTab === 'personality'" class="emp-panel">
-      <div class="form-group">
-        <label>{{ pKey('charm') }}</label>
-        <input v-model="emp.charm" :placeholder="pKey('charmPlaceholder')" maxlength="80" :disabled="disabled" />
-      </div>
-      <div class="form-group">
-        <label>{{ pKey('style') }}</label>
-        <input v-model="emp.style" :placeholder="pKey('stylePlaceholder')" maxlength="80" :disabled="disabled" />
-      </div>
-      <div class="form-group">
-        <label>{{ pKey('motto') }}</label>
-        <input v-model="emp.motto" :placeholder="pKey('mottoPlaceholder')" maxlength="80" :disabled="disabled" />
-      </div>
-    </div>
-
-    <!-- Tab: Work Ability -->
-    <div v-if="empTab === 'ability'" class="emp-panel">
-      <div class="form-group">
-        <label>{{ pKey('skills') }}</label>
-        <input v-model="emp.skills" :placeholder="pKey('skillsPlaceholder')" maxlength="200" :disabled="disabled" />
-      </div>
-      <div class="form-group">
-        <label>{{ pKey('weakness') }}</label>
-        <input v-model="emp.weakness" :placeholder="pKey('weaknessPlaceholder')" maxlength="200" :disabled="disabled" />
-      </div>
-      <div class="form-group">
-        <label>{{ pKey('attitude') }}</label>
-        <input v-model="emp.attitude" :placeholder="pKey('attitudePlaceholder')" maxlength="200" :disabled="disabled" />
-      </div>
-    </div>
-
-    <!-- Tab: Values & Preferences -->
-    <div v-if="empTab === 'values'" class="emp-panel">
-      <div class="form-group">
-        <label>{{ pKey('principle') }}</label>
-        <input v-model="emp.principle" :placeholder="pKey('principlePlaceholder')" maxlength="200" :disabled="disabled" />
-      </div>
-      <div class="form-group">
-        <label>{{ pKey('hobby') }}</label>
-        <input v-model="emp.hobby" :placeholder="pKey('hobbyPlaceholder')" maxlength="200" :disabled="disabled" />
-      </div>
-      <div class="form-group">
-        <label>{{ pKey('dislike') }}</label>
-        <input v-model="emp.dislike" :placeholder="pKey('dislikePlaceholder')" maxlength="200" :disabled="disabled" />
-      </div>
-    </div>
-
-    <!-- Tab: Signature Traits -->
-    <div v-if="empTab === 'trait'" class="emp-panel">
-      <div class="form-group">
-        <label>{{ pKey('credo') }}</label>
-        <input v-model="emp.credo" :placeholder="pKey('credoPlaceholder')" maxlength="200" :disabled="disabled" />
-      </div>
-      <div class="form-group">
-        <label>{{ pKey('report') }}</label>
-        <input v-model="emp.report" :placeholder="pKey('reportPlaceholder')" maxlength="200" :disabled="disabled" />
+      <div class="form-group full">
+        <label>{{ pKey('extraInfo') }}</label>
+        <textarea
+          v-model="emp.extraInfo"
+          :placeholder="pKey('extraInfoPlaceholder')"
+          maxlength="500"
+          rows="3"
+          :disabled="disabled"
+        ></textarea>
       </div>
     </div>
   </div>
@@ -163,11 +110,12 @@
 <script setup>
 import { ref, reactive, computed, watch } from 'vue'
 import { t } from '@/i18n'
+import { createPersona, resetPersona } from '@/lib/agent-persona'
 
 const props = defineProps({
   modelValue: { type: Object, required: true },
   avatarList: { type: Array, default: () => [] },
-  i18nPrefix: { type: String, default: 'setup.employee' },
+  i18nPrefix: { type: String, default: 'setup.assistants' },
   showIdField: { type: Boolean, default: true },
   showAvatar: { type: Boolean, default: true },
   disabled: { type: Boolean, default: false },
@@ -175,19 +123,118 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue', 'request-avatar-upload'])
 
-const empTab = ref('basic')
 const showAvatarPicker = ref(false)
 const tried = ref(false)
 let isInternalUpdate = false
 
-const emp = reactive({
-  name: '', gender: '', age: '', id: '', role: '', duty: '', dept: '',
-  callMe: '', myRelation: '', othersRelation: '',
-  charm: '', style: '', motto: '',
-  skills: '', weakness: '', attitude: '',
-  principle: '', hobby: '', dislike: '',
-  credo: '', report: '', avatar: '',
-})
+const emp = reactive(createPersona())
+
+function pKey(key) {
+  const fullKey = `${props.i18nPrefix}.${key}`
+  const text = t(fullKey)
+  return text === fullKey ? t(`setup.assistants.${key}`) : text
+}
+
+function roleText(role, key) {
+  const fullKey = `${props.i18nPrefix}.roles.${role}.${key}`
+  const text = t(fullKey)
+  return text === fullKey ? t(`setup.assistants.roles.${role}.${key}`) : text
+}
+
+function roleField(key) {
+  return roleText(emp.roleType, key)
+}
+
+const ROLE_DEFS = computed(() => [
+  {
+    key: 'employee',
+    label: pKey('roleEmployee'),
+    fields: [
+      field('employee', 'role', 'role', 40),
+      field('employee', 'duty', 'duty', 120, true),
+      field('employee', 'skills', 'skills', 120),
+      field('employee', 'style', 'style', 80),
+      field('employee', 'attitude', 'attitude', 120),
+      field('employee', 'principle', 'principle', 120),
+    ],
+  },
+  {
+    key: 'assistant',
+    label: pKey('roleAssistant'),
+    fields: [
+      field('assistant', 'duty', 'duty', 120, true),
+      field('assistant', 'skills', 'skills', 120),
+      field('assistant', 'style', 'style', 80),
+      field('assistant', 'attitude', 'attitude', 120),
+      field('assistant', 'principle', 'principle', 120),
+      field('assistant', 'dislike', 'dislike', 120),
+    ],
+  },
+  {
+    key: 'partner',
+    label: pKey('rolePartner'),
+    fields: [
+      field('partner', 'myRelation', 'myRelation', 100),
+      field('partner', 'charm', 'charm', 80),
+      field('partner', 'style', 'style', 80),
+      field('partner', 'hobby', 'hobby', 120),
+      field('partner', 'motto', 'motto', 80),
+      field('partner', 'principle', 'principle', 120),
+    ],
+  },
+  {
+    key: 'friend',
+    label: pKey('roleFriend'),
+    fields: [
+      field('friend', 'myRelation', 'myRelation', 100),
+      field('friend', 'charm', 'charm', 80),
+      field('friend', 'style', 'style', 80),
+      field('friend', 'hobby', 'hobby', 120),
+      field('friend', 'principle', 'principle', 120),
+      field('friend', 'dislike', 'dislike', 120),
+    ],
+  },
+  {
+    key: 'lover',
+    label: pKey('roleLover'),
+    fields: [
+      field('lover', 'myRelation', 'myRelation', 100),
+      field('lover', 'charm', 'charm', 80),
+      field('lover', 'style', 'style', 80),
+      field('lover', 'motto', 'motto', 80),
+      field('lover', 'hobby', 'hobby', 120),
+      field('lover', 'principle', 'principle', 120),
+    ],
+  },
+  {
+    key: 'confidant',
+    label: pKey('roleConfidant'),
+    fields: [
+      field('confidant', 'myRelation', 'myRelation', 100),
+      field('confidant', 'charm', 'charm', 80),
+      field('confidant', 'style', 'style', 80),
+      field('confidant', 'hobby', 'hobby', 120),
+      field('confidant', 'principle', 'principle', 120),
+      field('confidant', 'dislike', 'dislike', 120),
+    ],
+  },
+])
+
+function field(role, key, model, maxlength, full = false) {
+  return {
+    model,
+    maxlength,
+    full,
+    label: roleText(role, key),
+    placeholder: roleText(role, `${key}Placeholder`),
+  }
+}
+
+const activeRole = computed(() => ROLE_DEFS.value.find(role => role.key === emp.roleType) || ROLE_DEFS.value[0])
+
+function selectRole(roleType) {
+  emp.roleType = roleType
+}
 
 function seedFromProps(val) {
   if (!val) return
@@ -195,6 +242,7 @@ function seedFromProps(val) {
   Object.keys(emp).forEach(k => {
     if (val[k] !== undefined) emp[k] = val[k]
   })
+  if (!emp.roleType) emp.roleType = 'employee'
   isInternalUpdate = false
 }
 
@@ -211,19 +259,6 @@ watch(emp, () => {
   emit('update:modelValue', { ...emp })
   isInternalUpdate = false
 })
-
-function pKey(key) {
-  return t(`${props.i18nPrefix}.${key}`)
-}
-
-const EMP_TABS = computed(() => [
-  { key: 'basic', label: pKey('basic') },
-  { key: 'relation', label: pKey('relation') },
-  { key: 'personality', label: pKey('personality') },
-  { key: 'ability', label: pKey('ability') },
-  { key: 'values', label: pKey('values') },
-  { key: 'trait', label: pKey('trait') },
-])
 
 function clampAge() {
   let v = emp.age
@@ -257,11 +292,8 @@ function getData() {
 }
 
 function reset() {
-  Object.keys(emp).forEach(k => {
-    emp[k] = (k === 'id' && !props.showIdField) ? '' : ''
-  })
+  resetPersona(emp)
   tried.value = false
-  empTab.value = 'basic'
 }
 
 defineExpose({ validate, setAvatar, getData, reset, tried, isValid })
@@ -272,47 +304,54 @@ defineExpose({ validate, setAvatar, getData, reset, tried, isValid })
   width: 100%;
 }
 
-.emp-tabs {
-  display: flex;
-  gap: 0;
-  border-bottom: 2px solid var(--color-border);
+.role-tabs {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
   margin-bottom: var(--spacing-lg);
-  flex-wrap: wrap;
 }
 
-.emp-tab {
-  padding: 10px 14px;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  color: var(--color-text-tertiary);
+.role-tab {
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
-  cursor: pointer;
   font-weight: 500;
-  transition: all 0.2s;
+  cursor: pointer;
+  transition: all var(--transition-fast);
   white-space: nowrap;
 }
 
-.emp-tab:hover { color: var(--color-text); }
-.emp-tab.active {
+.role-tab:hover {
+  border-color: var(--color-primary);
+  color: var(--color-text);
+}
+
+.role-tab.active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
   color: var(--color-primary);
-  border-bottom-color: var(--color-primary);
+}
+
+.persona-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  animation: fadeIn 0.2s;
 }
 
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-.emp-panel {
-  animation: fadeIn 0.2s;
-}
-
-.emp-basic-row {
+.persona-basic-row {
   display: flex;
   gap: var(--spacing-lg);
   align-items: flex-start;
 }
 
-.emp-avatar-col {
+.avatar-col {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -320,7 +359,7 @@ defineExpose({ validate, setAvatar, getData, reset, tried, isValid })
   flex-shrink: 0;
 }
 
-.emp-basic-fields {
+.persona-fields {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -328,24 +367,22 @@ defineExpose({ validate, setAvatar, getData, reset, tried, isValid })
   min-width: 0;
 }
 
-.emp-field-row {
-  display: flex;
+.persona-fields.no-avatar {
+  width: 100%;
+}
+
+.field-row,
+.role-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacing-md);
 }
 
-.emp-field-row .form-group {
-  flex: 1;
+.role-fields .form-group.full {
+  grid-column: 1 / -1;
 }
 
-.emp-basic-fields .form-group.full {
-  width: 100%;
-}
-
-.emp-basic-fields.no-avatar {
-  width: 100%;
-}
-
-.emp-avatar-preview {
+.avatar-preview {
   width: 80px;
   height: 80px;
   border-radius: var(--radius-md);
@@ -358,31 +395,31 @@ defineExpose({ validate, setAvatar, getData, reset, tried, isValid })
   transition: border-color var(--transition-fast);
 }
 
-.emp-avatar-preview:hover {
+.avatar-preview:hover {
   border-color: var(--color-primary);
 }
 
-.emp-avatar-preview.has-error {
+.avatar-preview.has-error {
   border-color: var(--color-error);
 }
 
-.emp-avatar-label {
+.avatar-label {
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
 }
 
-.emp-avatar-preview img {
+.avatar-preview img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.emp-avatar-placeholder {
+.avatar-placeholder {
   font-size: 28px;
   color: var(--color-text-tertiary);
 }
 
-.emp-avatar-btn {
+.avatar-btn {
   font-size: var(--font-size-xs);
   color: var(--color-primary);
   padding: 2px 8px;
@@ -393,7 +430,7 @@ defineExpose({ validate, setAvatar, getData, reset, tried, isValid })
   transition: background var(--transition-fast);
 }
 
-.emp-avatar-btn:hover {
+.avatar-btn:hover {
   background: var(--color-primary-light);
 }
 
@@ -453,11 +490,34 @@ defineExpose({ validate, setAvatar, getData, reset, tried, isValid })
   outline: none;
 }
 
+.form-group textarea {
+  width: 100%;
+  min-height: 86px;
+  resize: vertical;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  outline: none;
+}
+
 .form-group input:focus {
   border-color: var(--color-primary);
 }
 
+.form-group textarea:focus {
+  border-color: var(--color-primary);
+}
+
 .form-group input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.form-group textarea:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -468,6 +528,7 @@ defineExpose({ validate, setAvatar, getData, reset, tried, isValid })
 }
 
 .gender-btn {
+  flex: 1;
   padding: var(--spacing-sm) var(--spacing-lg);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -506,5 +567,20 @@ defineExpose({ validate, setAvatar, getData, reset, tried, isValid })
   font-size: var(--font-size-xs);
   color: var(--color-error);
   margin-top: 2px;
+}
+
+@media (max-width: 720px) {
+  .role-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .persona-basic-row {
+    flex-direction: column;
+  }
+
+  .field-row,
+  .role-fields {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

@@ -1729,6 +1729,176 @@ function setupIPC() {
     return { ok: true };
   });
 
+  const AGENT_ROLE_NAMES = {
+    employee: '员工',
+    assistant: '助理',
+    partner: '搭子',
+    friend: '好友',
+    lover: '恋人',
+    confidant: '知己',
+  };
+
+  function agentValue(text, fallback = '未设定') {
+    return String(text || '').trim() || fallback;
+  }
+
+  function agentRoleName(agentData) {
+    return AGENT_ROLE_NAMES[agentData.roleType] || AGENT_ROLE_NAMES.employee;
+  }
+
+  function generateAgentSoulMd(agentData) {
+    const base = [
+      '# 角色灵魂',
+      `我是${agentValue(agentData.name)}，${agentValue(agentData.age)}岁，性别${agentValue(agentData.gender)}。我的角色类型是${agentRoleName(agentData)}。`,
+    ];
+    let sections;
+
+    switch (agentData.roleType) {
+      case 'assistant':
+        sections = [
+          ...base,
+          '',
+          '# 协助方式',
+          `我主要协助用户处理：${agentValue(agentData.duty)}。`,
+          `我擅长的协助方向是：${agentValue(agentData.skills)}。`,
+          `我的主动程度是：${agentValue(agentData.attitude)}。`,
+          '',
+          '# 性格与边界',
+          `我的表达方式是：${agentValue(agentData.style)}。`,
+          `我的协作原则是：${agentValue(agentData.principle)}。`,
+          `我会避免：${agentValue(agentData.dislike)}。`,
+        ];
+        break;
+      case 'partner':
+        sections = [
+          ...base,
+          '',
+          '# 陪伴关系',
+          `我和用户的关系是：${agentValue(agentData.myRelation)}。`,
+          `我适合陪用户一起做的事：${agentValue(agentData.hobby)}。`,
+          `我常说的话是："${agentValue(agentData.motto)}"。`,
+          '',
+          '# 相处气质',
+          `我的性格特质是：${agentValue(agentData.charm)}。`,
+          `我的说话方式是：${agentValue(agentData.style)}。`,
+          `我们的搭伙规则是：${agentValue(agentData.principle)}。`,
+        ];
+        break;
+      case 'friend':
+        sections = [
+          ...base,
+          '',
+          '# 朋友关系',
+          `我和用户的关系是：${agentValue(agentData.myRelation)}。`,
+          `我会像真实朋友一样回应，性格特质是：${agentValue(agentData.charm)}。`,
+          `我们常聊的话题是：${agentValue(agentData.hobby)}。`,
+          '',
+          '# 相处方式',
+          `我的说话方式是：${agentValue(agentData.style)}。`,
+          `我重视的相处边界是：${agentValue(agentData.principle)}。`,
+          `我会避免：${agentValue(agentData.dislike)}。`,
+        ];
+        break;
+      case 'lover':
+        sections = [
+          ...base,
+          '',
+          '# 亲密关系',
+          `我和用户的关系是：${agentValue(agentData.myRelation)}。`,
+          `我吸引人的特质是：${agentValue(agentData.charm)}。`,
+          `我偏好的亲密日常是：${agentValue(agentData.hobby)}。`,
+          '',
+          '# 爱意表达',
+          `我的亲密表达方式是：${agentValue(agentData.style)}。`,
+          `我常用的亲密表达是："${agentValue(agentData.motto)}"。`,
+          `我在关系中坚持的边界是：${agentValue(agentData.principle)}。`,
+        ];
+        break;
+      case 'confidant':
+        sections = [
+          ...base,
+          '',
+          '# 精神连接',
+          `我和用户的关系是：${agentValue(agentData.myRelation)}。`,
+          `我理解用户的方式是：${agentValue(agentData.charm)}。`,
+          `我适合陪用户聊：${agentValue(agentData.hobby)}。`,
+          '',
+          '# 陪伴原则',
+          `我的安抚方式是：${agentValue(agentData.style)}。`,
+          `我会坚持的守护原则是：${agentValue(agentData.principle)}。`,
+          `我会避免：${agentValue(agentData.dislike)}。`,
+        ];
+        break;
+      case 'employee':
+      default:
+        sections = [
+          ...base,
+          '',
+          '# 工作定位',
+          `我目前担任${agentValue(agentData.role)}。`,
+          `我的核心职责是：${agentValue(agentData.duty)}。`,
+          `我擅长的能力是：${agentValue(agentData.skills)}。`,
+          '',
+          '# 执行风格',
+          `我的沟通方式是：${agentValue(agentData.style)}。`,
+          `我的执行状态是：${agentValue(agentData.attitude)}。`,
+          `我的工作原则是：${agentValue(agentData.principle)}。`,
+        ];
+        break;
+    }
+
+    if (String(agentData.extraInfo || '').trim()) {
+      sections.push('', '# 其他信息', String(agentData.extraInfo).trim());
+    }
+    return `${sections.join('\n')}\n`;
+  }
+
+  function generateAgentIdentityMd(agentData) {
+    const lines = [
+      '# 基础信息',
+      `+ 姓名:${agentValue(agentData.name)}`,
+      `+ 性别:${agentValue(agentData.gender)}`,
+      `+ 年龄:${agentValue(agentData.age)}`,
+      `+ 角色类型:${agentRoleName(agentData)}`,
+    ];
+
+    if (agentData.roleType === 'employee') {
+      lines.push(`+ 职位:${agentValue(agentData.role)}`, `+ 工作职责:${agentValue(agentData.duty)}`, `+ 擅长能力:${agentValue(agentData.skills)}`, `+ 执行状态:${agentValue(agentData.attitude)}`);
+    } else if (agentData.roleType === 'assistant') {
+      lines.push(`+ 协助范围:${agentValue(agentData.duty)}`, `+ 擅长协助:${agentValue(agentData.skills)}`, `+ 主动程度:${agentValue(agentData.attitude)}`, `+ 避免方式:${agentValue(agentData.dislike)}`);
+    } else {
+      lines.push(`+ 与用户的关系:${agentValue(agentData.myRelation)}`, `+ 偏好话题/活动:${agentValue(agentData.hobby)}`, `+ 口头禅:${agentValue(agentData.motto)}`);
+    }
+
+    lines.push(
+      '',
+      '# 性格表达',
+      `+ 核心特质:${agentValue(agentData.charm || agentData.role)}`,
+      `+ 说话风格:${agentValue(agentData.style)}`,
+      `+ 重要原则:${agentValue(agentData.principle)}`,
+      '',
+      '# 人物关系',
+      `+ 对用户的称呼:${agentValue(agentData.callMe)}`,
+      `+ 与其他人的关系:${agentValue(agentData.othersRelation)}`
+    );
+
+    return `${lines.join('\n')}\n`;
+  }
+
+  function generateAgentUserMd(agentData) {
+    const relation = agentData.roleType === 'employee'
+      ? `我是用户的${agentValue(agentData.role || agentData.myRelation, '员工')}`
+      : `我是用户的${agentValue(agentData.myRelation, agentRoleName(agentData))}`;
+
+    return `# 用户档案
++ 用户姓名:未知
++ 用户年龄:未知
++ 用户性别:未知
++ ${relation}
++ 我对用户的称呼:${agentValue(agentData.callMe)}
+`;
+  }
+
   ipcMain.handle('save-agent-workspace', async (_, agentData) => {
     const dataDir = resolveDataDir();
     const workspaceDir = path.join(dataDir, '.openclaw', 'workspace');
@@ -1736,72 +1906,20 @@ function setupIPC() {
       fs.mkdirSync(workspaceDir, { recursive: true });
 
       // Write SOUL.md
-      const soulMd = `
-# 身份信息
-我叫${agentData.name}，我今年${agentData.age}岁，性别${agentData.gender}，目前担任${agentData.role}，隶属于${agentData.dept}。我的核心职责是${agentData.duty}
-
-# 擅长技能
-${agentData.skills}
-
-# 性格特质
-我性格${agentData.charm}，说话风格${agentData.style}，平时常说的口头禅是"${agentData.motto}"
-
-# 工作态度与原则
-我的工作态度是${agentData.attitude}，处事原则是${agentData.principle}
-
-# 喜好与短板
-我个人喜欢${agentData.hobby}，最反感${agentData.dislike}；我的工作短板是${agentData.weakness}，但我会发挥优势，专注执行，弥补不足。
-
-# 专属信念
-我的座右铭是"${agentData.credo}"，汇报工作时会遵循${agentData.report}的原则
-`;
+      const soulMd = agentData.files?.SOUL || generateAgentSoulMd(agentData);
       fs.writeFileSync(path.join(workspaceDir, 'SOUL.md'), soulMd, 'utf8');
 
       // Write IDENTITY.md
-      const identityMd = `
-# 基础信息
-+ 姓名:${agentData.name}
-+ 性别:${agentData.gender}
-+ 年龄:${agentData.age}
-+ 角色:${agentData.role}
-+ 工作职责:${agentData.duty}
-+ 所属部门:${agentData.dept}
-
-# 性格特征
-+ 性格:${agentData.charm}
-+ 说话风格:${agentData.style}
-+ 口头禅:${agentData.motto}
-
-# 工作特征
-+ 擅长技能:${agentData.skills}
-+ 工作短板:${agentData.weakness}
-+ 工作态度:${agentData.attitude}
-
-# 三观特征
-+ 处事原则:${agentData.principle}
-+ 个人喜好:${agentData.hobby}
-+ 反感事物:${agentData.dislike}
-+ 座右铭:${agentData.credo}
-
-# 人物关系
-+ 与其他人的关系:${agentData.othersRelation}
-`;
+      const identityMd = agentData.files?.IDENTITY || generateAgentIdentityMd(agentData);
       fs.writeFileSync(path.join(workspaceDir, 'IDENTITY.md'), identityMd, 'utf8');
 
       // Write USER.md
-      const userMd = `
-# 用户档案 
-+ 用户姓名:未知
-+ 用户年龄:未知
-+ 用户性别:未知
-+ 我与用户的关系:我是他(她)的${agentData.myRelation}
-+ 我对用户的称呼:${agentData.callMe}
-+ 我对用户的汇报方式:${agentData.report}
-`;
+      const userMd = agentData.files?.USER || generateAgentUserMd(agentData);
       fs.writeFileSync(path.join(workspaceDir, 'USER.md'), userMd, 'utf8');
 
       // Write agent_info.json for structured data reuse
       const agentInfo = {
+        roleType: agentData.roleType || 'employee',
         name: agentData.name,
         gender: agentData.gender,
         age: agentData.age,
@@ -1823,6 +1941,7 @@ ${agentData.skills}
         dislike: agentData.dislike,
         credo: agentData.credo,
         report: agentData.report,
+        extraInfo: agentData.extraInfo,
         avatar: agentData.avatar,
       };
       fs.writeFileSync(path.join(workspaceDir, 'agent_info.json'), JSON.stringify(agentInfo, null, 2), 'utf8');

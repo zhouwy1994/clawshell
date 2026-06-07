@@ -204,7 +204,7 @@
             ref="personaFormRef"
             v-model="empData"
             :avatar-list="AVATARS"
-            i18n-prefix="assistants.employee"
+            i18n-prefix="assistants.assistants"
             :show-id-field="false"
             :show-avatar="false"
             @request-avatar-upload="triggerStructuredUpload"
@@ -289,6 +289,7 @@ import { getIcon } from '@/lib/icons'
 import AgentPersonaForm from '@/components/AgentPersonaForm.vue'
 import { loadAvatarDataUrls } from '@/lib/avatars'
 import { processAvatarFile } from '@/lib/avatar-upload'
+import { createPersona, normalizePersona, resetPersona } from '@/lib/agent-persona'
 import { generateSoulMd, generateIdentityMd, generateUserMd } from '@/lib/agent-md-generator'
 
 const router = useRouter()
@@ -388,14 +389,7 @@ const uploadTarget = ref('new')
 // Dual-mode editing state
 const editMode = ref('structured')
 const personaFormRef = ref(null)
-const empData = reactive({
-  name: '', gender: '', age: '', id: '', role: '', duty: '', dept: '',
-  callMe: '', myRelation: '', othersRelation: '',
-  charm: '', style: '', motto: '',
-  skills: '', weakness: '', attitude: '',
-  principle: '', hobby: '', dislike: '',
-  credo: '', report: '', avatar: '',
-})
+const empData = reactive(createPersona())
 
 // Editing existing agent state
 const editingId = ref('')
@@ -513,15 +507,12 @@ async function loadAgentPersona(agentId) {
   try {
     const raw = await window.clawshell.readAgentFile(agentId, 'agent_info.json')
     if (raw) {
-      const info = JSON.parse(raw)
-      Object.keys(empData).forEach(k => {
-        if (info[k] !== undefined) empData[k] = info[k]
-      })
+      resetPersona(empData, normalizePersona(JSON.parse(raw)))
       return
     }
   } catch {}
   // No agent_info.json — reset to empty
-  Object.keys(empData).forEach(k => { empData[k] = '' })
+  resetPersona(empData)
   // Seed name/avatar from agent data
   const agent = agentList.value.find(a => a.id === agentId)
   if (agent) {
@@ -544,9 +535,10 @@ function goStep2() {
 function goStep3() {
   // Reset empData for new agents; existing agents already loaded in startEditFull
   if (!editingId.value) {
-    Object.keys(empData).forEach(k => { empData[k] = '' })
-    empData.name = newName.value
-    empData.avatar = newAvatar.value
+    resetPersona(empData, {
+      name: newName.value,
+      avatar: newAvatar.value,
+    })
   }
   editMode.value = 'structured'
   step.value = 3
@@ -577,7 +569,7 @@ async function handleSave() {
   if (editMode.value === 'structured') {
     // Save agent_info.json
     try {
-      await window.clawshell.writeAgentFile(id, 'agent_info.json', JSON.stringify({ ...empData }, null, 2))
+      await window.clawshell.writeAgentFile(id, 'agent_info.json', JSON.stringify(normalizePersona(empData), null, 2))
     } catch {}
     // Generate and write .md files from structured data
     try {
@@ -623,7 +615,7 @@ function resetAndNew() {
   soulData.IDENTITY = ''
   soulData.USER = ''
   editMode.value = 'structured'
-  Object.keys(empData).forEach(k => { empData[k] = '' })
+  resetPersona(empData)
   expandedId.value = ''
   step.value = 1
 }
