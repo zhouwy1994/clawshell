@@ -51,7 +51,7 @@ ClawShell（虾壳）是一款基于 [OpenClaw](https://www.npmjs.com/package/op
     <td><img src="assets/images/readme/guide_model.png" alt="Models" width="480" /></td>
   </tr>
   <tr>
-    <td align="center"><b>启动引导-1号员工</b></td>
+    <td align="center"><b>启动引导-1号助手</b></td>
     <td align="center"><b>启动引导-启动网关</b></td>
   </tr>
   <tr>
