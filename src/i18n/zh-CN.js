@@ -217,6 +217,7 @@ export default {
   'settings.title': '设置',
   'settings.tab.appearance': '外观',
   'settings.tab.chat': '聊天',
+  'settings.tab.voice': '语音',
   'settings.tab.gateway': '网关',
   'settings.tab.about': '关于',
 
@@ -244,6 +245,15 @@ export default {
   'settings.chat.sendKeyEnter': 'Enter 发送',
   'settings.chat.sendKeyCtrlEnter': 'Ctrl + Enter 发送',
   'settings.chat.defaultAssistant': '默认助手',
+  'settings.voice.apiKey': '百炼（DashScope）API KEY',
+  'settings.voice.apiKeyPlaceholder': '输入 sk-... API KEY',
+  'settings.voice.showText': '沉浸模式显示语音文字',
+  'settings.voice.showTextHint': '开启后会显示识别到的语音文字和助手回答文字。',
+  'settings.voice.voice': '音色选择',
+  'settings.voice.voiceHint': '用于沉浸模式回答复述，默认 longanhuan_v3',
+  'settings.voice.loading': '正在从阿里云文档加载官方音色列表...',
+  'settings.voice.preview': '试听',
+  'settings.voice.previewing': '播放中',
 
   // Gateway
   'settings.gateway.status': '网关状态',
@@ -452,6 +462,7 @@ export default {
   'chat.thinkingHigh': '思考: 高',
   'chat.showThinking': '显示思考内容',
   'chat.toolOutput': '工具调用输出',
+  'chat.immersiveMode': '沉浸模式',
   'chat.loadingHistory': '加载历史消息...',
   'chat.startNew': '开始新对话',
   'chat.inputPlaceholder': '输入消息... (Enter 发送)',

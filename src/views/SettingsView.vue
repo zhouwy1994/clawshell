@@ -138,6 +138,60 @@
           <div v-if="toast.show && toast.key === 'chat'" class="toast toast-success">{{ toast.msg }}</div>
         </div>
 
+        <!-- Voice -->
+        <div v-if="activeTab === 'voice'" class="settings-section voice-section">
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.voice.apiKey') }}</label>
+            <input
+              v-model="voiceApiKey"
+              type="password"
+              :placeholder="maskedVoiceApiKey || t('settings.voice.apiKeyPlaceholder')"
+              class="section-input"
+              autocomplete="off"
+            />
+          </div>
+          <div class="section-block">
+            <label class="checkbox-label">
+              <input v-model="voiceShowText" type="checkbox" />
+              <span>{{ t('settings.voice.showText') }}</span>
+            </label>
+            <p class="voice-hint">{{ t('settings.voice.showTextHint') }}</p>
+          </div>
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.voice.voice') }}</label>
+            <p class="voice-hint">{{ t('settings.voice.voiceHint') }}</p>
+            <p v-if="voiceLoading" class="voice-hint">{{ t('settings.voice.loading') }}</p>
+            <p v-else-if="voiceLoadError" class="voice-error">{{ voiceLoadError }}</p>
+            <p v-if="voicePreviewError" class="voice-error">{{ voicePreviewError }}</p>
+            <div class="voice-card-grid">
+              <div
+                v-for="voice in voiceOptions"
+                :key="voice.id"
+                class="voice-card"
+                :class="{ selected: voiceId === voice.id }"
+                @click="voiceId = voice.id"
+              >
+                <span class="voice-card-name">{{ voice.name }}</span>
+                <span class="voice-card-id">{{ voice.id }}</span>
+                <span class="voice-card-desc">{{ voice.desc }}</span>
+                <span v-if="voice.language" class="voice-card-lang">{{ voice.language }}</span>
+                <span class="voice-card-actions">
+                  <button
+                    type="button"
+                    class="voice-preview-btn"
+                    :disabled="!voice.sampleUrl || previewingVoiceId === voice.id"
+                    @click.stop="playVoiceSample(voice)"
+                  >
+                    {{ previewingVoiceId === voice.id ? t('settings.voice.previewing') : t('settings.voice.preview') }}
+                  </button>
+                </span>
+              </div>
+            </div>
+          </div>
+          <button class="btn btn-primary section-btn" @click="saveVoice">{{ t('common.save') }}</button>
+          <div v-if="toast.show && toast.key === 'voice'" class="toast toast-success">{{ toast.msg }}</div>
+        </div>
+
         <!-- Registry -->
         <div v-if="activeTab === 'registry'" class="settings-section">
           <div class="section-block">
@@ -404,6 +458,26 @@ const langModel = computed({
 const sendKey = ref('ctrl+enter')
 const defaultAssistant = ref('')
 
+// Voice
+const voiceApiKey = ref('')
+const maskedVoiceApiKey = ref('')
+const voiceId = ref('longanhuan_v3')
+const voiceShowText = ref(true)
+const voiceLoading = ref(false)
+const voiceLoadError = ref('')
+const voicePreviewError = ref('')
+const previewingVoiceId = ref('')
+let previewAudio = null
+const fallbackVoiceOptions = [
+  { id: 'longanhuan_v3', name: '龙安欢（V3）', trait: '欢脱元气女', age: '20~30岁', language: '中文（普通话、广东话、东北话、河南话、湖南话、陕西话、山东话、四川话、安徽话）、英文', desc: '欢脱元气女 · 20~30岁', sampleUrl: 'https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20251117/lolnxw/%E9%BE%99%E5%AE%89%E6%AC%A2.mp3' },
+  { id: 'longxiaochun_v3', name: '龙小淳', trait: '知性积极女', age: '25~30岁', language: '中文（普通话）、英文', desc: '知性积极女 · 25~30岁', sampleUrl: 'https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260105/flmrpr/%E9%BE%99%E5%B0%8F%E6%B7%B3.mp3' },
+  { id: 'longxiaoxia_v3', name: '龙小夏', trait: '沉稳权威女', age: '25~30岁', language: '中文（普通话）、英文', desc: '沉稳权威女 · 25~30岁', sampleUrl: 'https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260105/bncrea/%E9%BE%99%E5%B0%8F%E5%A4%8F.mp3' },
+  { id: 'longhua_v3', name: '龙华', trait: '元气甜美女', age: '20~25岁', language: '中文（普通话）、英文', desc: '元气甜美女 · 20~25岁', sampleUrl: 'https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260128/bmmeqr/%E9%BE%99%E5%8D%8E.mp3' },
+  { id: 'longcheng_v3', name: '龙橙', trait: '智慧青年男', age: '20~25岁', language: '中文（普通话）、英文', desc: '智慧青年男 · 20~25岁', sampleUrl: 'https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260105/qagbzd/%E9%BE%99%E6%A9%99.mp3' },
+  { id: 'longlaotie_v3', name: '龙老铁', trait: '东北直率男', age: '25~30岁', language: '中文（东北话）、英文', desc: '东北直率男 · 25~30岁', sampleUrl: 'https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260105/yuxzau/%E9%BE%99%E8%80%81%E9%93%81.mp3' },
+]
+const voiceOptions = ref([...fallbackVoiceOptions])
+
 // Gateway
 const autoStart = ref(false)
 const startupTimeout = ref(120)
@@ -459,6 +533,7 @@ const tabs = [
   { key: 'profile', icon: '👤', label: 'settings.tab.profile' },
   { key: 'appearance', icon: '🎨', label: 'settings.tab.appearance' },
   { key: 'chat', icon: '💬', label: 'settings.tab.chat' },
+  { key: 'voice', icon: '🎙️', label: 'settings.tab.voice' },
   { key: 'registry', icon: '📦', label: 'settings.tab.registry' },
   { key: 'gateway', icon: '⚡', label: 'settings.tab.gateway' },
   { key: 'about', icon: 'ℹ️', label: 'settings.tab.about' },
@@ -531,6 +606,12 @@ async function loadSettings() {
   sendKey.value = chat.sendKey || 'ctrl+enter'
   defaultAssistant.value = chat.defaultAssistant || ''
 
+  const voice = settings.voice || {}
+  voiceApiKey.value = voice.dashscopeApiKey || ''
+  maskedVoiceApiKey.value = voice.dashscopeApiKey ? `${voice.dashscopeApiKey.slice(0, 6)}****${voice.dashscopeApiKey.slice(-4)}` : ''
+  voiceId.value = voice.voice || 'longanhuan_v3'
+  voiceShowText.value = voice.showImmersiveText !== false
+
   const gw = settings.gateway || {}
   autoStart.value = gw.autoStart || false
   startupTimeout.value = gw.startupTimeout || 120
@@ -542,6 +623,32 @@ async function loadSettings() {
   if (!isPreset) customRegistry.value = npmRegistry.value
 
   // dataDir is now read-only from CLAWSHELL_HOME env, populated via getSystemInfo
+}
+
+async function loadCosyVoiceVoices() {
+  voiceLoading.value = true
+  voiceLoadError.value = ''
+  try {
+    const res = await ipc.getCosyVoiceVoices()
+    if (!res?.ok || !Array.isArray(res.voices) || res.voices.length === 0) {
+      throw new Error(res?.error || '音色列表加载失败，已使用内置兜底列表')
+    }
+    voiceOptions.value = res.voices.map(voice => ({
+      ...voice,
+      desc: voice.desc || [voice.trait, voice.age].filter(Boolean).join(' · '),
+    }))
+  } catch (err) {
+    voiceOptions.value = [...fallbackVoiceOptions]
+    voiceLoadError.value = err.message || '音色列表加载失败，已使用内置兜底列表'
+  } finally {
+    if (voiceId.value && !voiceOptions.value.some(voice => voice.id === voiceId.value)) {
+      voiceOptions.value = [
+        { id: voiceId.value, name: voiceId.value, desc: '当前已保存音色', sampleUrl: '' },
+        ...voiceOptions.value,
+      ]
+    }
+    voiceLoading.value = false
+  }
 }
 
 async function saveSettingsPatch(patch) {
@@ -580,6 +687,45 @@ async function saveChat() {
     chat: { sendKey: sendKey.value, defaultAssistant: defaultAssistant.value },
   })
   showToast(t('common.saveSuccess'), 'chat')
+}
+
+async function saveVoice() {
+  await saveSettingsPatch({
+    voice: {
+      dashscopeApiKey: voiceApiKey.value.trim(),
+      voice: voiceId.value,
+      showImmersiveText: voiceShowText.value,
+      asrModel: 'qwen3-asr-flash-realtime',
+      ttsModel: voiceId.value.endsWith('_v3') ? 'cosyvoice-v3.5-flash' : 'cosyvoice-v3.5-plus',
+    },
+  })
+  maskedVoiceApiKey.value = voiceApiKey.value ? `${voiceApiKey.value.slice(0, 6)}****${voiceApiKey.value.slice(-4)}` : ''
+  showToast(t('common.saveSuccess'), 'voice')
+}
+
+async function playVoiceSample(voice) {
+  if (!voice?.sampleUrl) return
+  voicePreviewError.value = ''
+  previewingVoiceId.value = voice.id
+  try {
+    if (previewAudio) {
+      previewAudio.pause()
+      previewAudio.removeAttribute('src')
+      previewAudio.load()
+    }
+    const res = await ipc.getVoiceSampleDataUrl(voice.sampleUrl)
+    const src = res?.ok && res.dataUrl ? res.dataUrl : voice.sampleUrl
+    previewAudio = new Audio(src)
+    previewAudio.onended = () => { previewingVoiceId.value = '' }
+    previewAudio.onerror = () => {
+      voicePreviewError.value = `试听失败：${voice.name || voice.id}`
+      previewingVoiceId.value = ''
+    }
+    await previewAudio.play()
+  } catch (err) {
+    voicePreviewError.value = `试听失败：${err.message || err}`
+    previewingVoiceId.value = ''
+  }
 }
 
 async function saveRegistry() {
@@ -751,6 +897,7 @@ function openContact() {
 
 onMounted(async () => {
   await loadSettings()
+  await loadCosyVoiceVoices()
   await loadSystemInfo()
   await loadSystemFonts()
 })
@@ -1020,6 +1167,110 @@ watch(autoStart, () => {
   background: var(--color-primary-light);
 }
 .radio-item input { display: none; }
+
+/* Voice */
+.voice-section {
+  max-width: 760px;
+}
+
+.voice-hint {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm);
+}
+
+.voice-error {
+  margin: 0;
+  color: var(--color-warning);
+  font-size: var(--font-size-sm);
+}
+
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+.checkbox-label input {
+  accent-color: var(--color-primary);
+}
+
+.voice-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  max-width: 760px;
+}
+
+.voice-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 132px;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, transform 0.15s, background 0.15s;
+}
+
+.voice-card:hover {
+  border-color: var(--color-primary);
+  transform: translateY(-1px);
+}
+
+.voice-card.selected {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.voice-card-name {
+  font-weight: 700;
+}
+
+.voice-card-id {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+.voice-card-desc {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+
+.voice-card-lang {
+  flex: 1;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+}
+
+.voice-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.voice-preview-btn {
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+}
+
+.voice-preview-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 /* Gateway */
 .gateway-status-row {

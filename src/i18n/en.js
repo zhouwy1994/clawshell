@@ -217,6 +217,7 @@ export default {
   'settings.title': 'Settings',
   'settings.tab.appearance': 'Appearance',
   'settings.tab.chat': 'Chat',
+  'settings.tab.voice': 'Voice',
   'settings.tab.gateway': 'Gateway',
   'settings.tab.about': 'About',
 
@@ -244,6 +245,15 @@ export default {
   'settings.chat.sendKeyEnter': 'Enter to Send',
   'settings.chat.sendKeyCtrlEnter': 'Ctrl + Enter to Send',
   'settings.chat.defaultAssistant': 'Default Assistant',
+  'settings.voice.apiKey': 'Bailian (DashScope) API KEY',
+  'settings.voice.apiKeyPlaceholder': 'Enter sk-... API KEY',
+  'settings.voice.showText': 'Show voice text in immersive mode',
+  'settings.voice.showTextHint': 'Show recognized speech text and assistant replies when enabled.',
+  'settings.voice.voice': 'Voice',
+  'settings.voice.voiceHint': 'Used for immersive mode TTS, default longanhuan_v3',
+  'settings.voice.loading': 'Loading official voices from Alibaba Cloud docs...',
+  'settings.voice.preview': 'Preview',
+  'settings.voice.previewing': 'Playing',
 
   // Gateway
   'settings.gateway.status': 'Gateway Status',
@@ -452,6 +462,7 @@ export default {
   'chat.thinkingHigh': 'Think: High',
   'chat.showThinking': 'Show thinking',
   'chat.toolOutput': 'Tool output',
+  'chat.immersiveMode': 'Immersive mode',
   'chat.loadingHistory': 'Loading history...',
   'chat.startNew': 'Start new chat',
   'chat.inputPlaceholder': 'Type a message... (Enter to send)',

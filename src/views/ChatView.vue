@@ -54,6 +54,12 @@
             @click="chatStore.showToolCalls = !chatStore.showToolCalls"
             v-html="getIcon('wrench', 16)"
           ></button>
+          <button
+            class="toggle-btn immersive-btn"
+            :title="t('chat.immersiveMode')"
+            @click="immersiveVisible = true"
+            v-html="getIcon('radio', 16)"
+          ></button>
         </div>
       </div>
 
@@ -114,6 +120,12 @@
       @close="showNewSessionDialog = false"
       @create="handleNewSession"
     />
+    <ImmersiveVoiceMode
+      v-if="immersiveVisible"
+      :assistant-name="currentAgentName"
+      :model-name="currentModelName"
+      @exit="immersiveVisible = false"
+    />
   </div>
 </template>
 
@@ -130,6 +142,7 @@ import ChatMessage from '@/components/ChatMessage.vue'
 import ChatInput from '@/components/ChatInput.vue'
 import ToolCallCard from '@/components/ToolCallCard.vue'
 import NewSessionDialog from '@/components/NewSessionDialog.vue'
+import ImmersiveVoiceMode from '@/components/ImmersiveVoiceMode.vue'
 import { ipc } from '@/lib/ipc'
 
 const chatStore = useChatStore()
@@ -138,6 +151,7 @@ const gatewayStore = useGatewayStore()
 const gw = useGatewayClient()
 const messagesRef = ref(null)
 const showNewSessionDialog = ref(false)
+const immersiveVisible = ref(false)
 
 const gatewayReady = computed(() => gatewayStore.ready)
 

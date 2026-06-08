@@ -19,7 +19,9 @@ const http = require('http');
 const https = require('https');
 const net = require('net');
 const os = require('os');
+const { randomUUID } = require('crypto');
 const AdmZip = require('adm-zip');
+const WebSocket = require('ws');
 
 // ═══════════════════════════════════════════
 // 常量定义
@@ -44,6 +46,9 @@ let isRestarting = false;
 let crashCount = 0;
 let healthCheckTimer = null;
 let settingsCache = null;
+const immersiveVoiceSessions = new Map();
+let cosyVoiceListCache = null;
+let cosyVoiceListCacheAt = 0;
 
 // ═══════════════════════════════════════════
 // 动态路径计算
@@ -403,6 +408,475 @@ function saveSettings(settings) {
   const { settingsPath } = resolvePaths();
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+}
+
+function emitImmersiveVoice(sessionId, event, payload = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('immersive-voice-event', { sessionId, ...payload, event });
+}
+
+function immersiveLog(...args) {
+  console.log('[immersive-voice]', ...args);
+}
+
+function immersiveWarn(...args) {
+  console.warn('[immersive-voice]', ...args);
+}
+
+function getDashScopeApiKey(options = {}) {
+  return options.apiKey || getSettings().voice?.dashscopeApiKey || process.env.DASHSCOPE_API_KEY || '';
+}
+
+function createDashScopeSocket({ apiKey, sessionId, kind, url, headers = {}, meta = {} }) {
+  const key = apiKey || getDashScopeApiKey();
+  if (!key) throw new Error('Missing DashScope API KEY');
+  immersiveLog(`${kind} websocket create`, { sessionId, url, headers: Object.keys(headers), hasApiKey: !!key });
+  const ws = new WebSocket(url, {
+    headers: {
+      Authorization: `Bearer ${key}`,
+      ...headers,
+    },
+  });
+  immersiveVoiceSessions.set(sessionId, { kind, ws, chunks: [], finishTimer: null, ...meta });
+  ws.on('error', err => {
+    immersiveWarn(`${kind} websocket error`, { sessionId, error: err.message || String(err) });
+    emitImmersiveVoice(sessionId, `${kind}:error`, { error: err.message || String(err) });
+  });
+  ws.on('close', (code, reason) => {
+    const reasonText = reason?.toString?.() || '';
+    immersiveLog(`${kind} websocket closed`, { sessionId, code, reason: reasonText });
+    if (code && code !== 1000 && code !== 1005) {
+      emitImmersiveVoice(sessionId, `${kind}:error`, { error: reasonText || `WebSocket closed: ${code}` });
+    }
+    emitImmersiveVoice(sessionId, `${kind}:closed`, { code, reason: reasonText });
+    immersiveVoiceSessions.delete(sessionId);
+  });
+  return ws;
+}
+
+function dashScopeHeader(action, taskId, streaming = 'duplex') {
+  return {
+    header: {
+      action,
+      task_id: taskId,
+      streaming,
+    },
+  };
+}
+
+function dashScopeFinishTask(taskId) {
+  return {
+    ...dashScopeHeader('finish-task', taskId, 'duplex'),
+    payload: {
+      input: {},
+    },
+  };
+}
+
+function realtimeEvent(type, extra = {}) {
+  return {
+    event_id: `event_${randomUUID()}`,
+    type,
+    ...extra,
+  };
+}
+
+function parseAsrMessage(raw) {
+  let data = raw;
+  if (Buffer.isBuffer(raw)) data = raw.toString('utf8');
+  if (raw instanceof ArrayBuffer) data = Buffer.from(raw).toString('utf8');
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch { return null; }
+  }
+  const event = String(data?.type || '').toLowerCase();
+  if (!event) return null;
+  if (event === 'conversation.item.input_audio_transcription.text') {
+    const text = `${data?.text || ''}${data?.stash || ''}`.trim();
+    return {
+      event,
+      text,
+      isSentenceEnd: false,
+      rawEvent: event,
+      raw: data,
+    };
+  }
+  if (event === 'conversation.item.input_audio_transcription.completed') {
+    const transcript = String(data?.transcript || '').trim();
+    return {
+      event,
+      text: transcript,
+      transcript,
+      isSentenceEnd: true,
+      rawEvent: event,
+      raw: data,
+    };
+  }
+  if (event === 'conversation.item.input_audio_transcription.failed' || event === 'error') {
+    const error = data?.error?.message || data?.error || data?.message || 'ASR error';
+    return {
+      event,
+      error: String(error),
+      isSentenceEnd: false,
+      rawEvent: event,
+      raw: data,
+    };
+  }
+  return {
+    event,
+    isSentenceEnd: false,
+    rawEvent: event,
+    raw: data,
+  };
+}
+
+function summarizeAsrRaw(raw) {
+  try {
+    const text = Buffer.isBuffer(raw)
+      ? raw.toString('utf8')
+      : raw instanceof ArrayBuffer
+        ? Buffer.from(raw).toString('utf8')
+        : String(raw || '');
+    const parsed = JSON.parse(text);
+    return {
+      type: parsed?.type || parsed?.event || parsed?.header?.event,
+      text: parsed?.text,
+      stash: parsed?.stash,
+      transcript: parsed?.transcript,
+      error: parsed?.error?.message || parsed?.error,
+      raw: text.slice(0, 500),
+    };
+  } catch (err) {
+    return {
+      binary: Buffer.isBuffer(raw),
+      bytes: Buffer.isBuffer(raw) ? raw.length : undefined,
+      parseError: err.message,
+    };
+  }
+}
+
+function parseTtsMessage(raw) {
+  if (Buffer.isBuffer(raw)) {
+    const text = raw.toString('utf8');
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      return { event: '', audioBase64: raw.toString('base64'), done: false, failed: false, started: false };
+    }
+  }
+  let data = raw;
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch { return null; }
+  }
+  const event = String(data?.header?.event || data?.event || data?.type || '').toLowerCase();
+  const audio = data?.payload?.output?.audio || data?.output?.audio || data?.audio;
+  const base64 = audio?.data || audio;
+  const started = event.includes('task-started') || event.includes('task_started');
+  const done = event.includes('task-finished') || event.includes('task_finished');
+  const failed = event.includes('task-failed') || event.includes('task_failed') || event === 'error';
+  const error = data?.header?.error_message || data?.payload?.message || data?.error?.message || data?.error || '';
+  return {
+    event,
+    audioBase64: typeof base64 === 'string' ? base64 : '',
+    done,
+    failed,
+    started,
+    error: error ? String(error) : '',
+    raw: data,
+  };
+}
+
+function startDashScopeAsr(options = {}) {
+  const sessionId = options.sessionId || randomUUID();
+  const model = options.model || 'qwen3-asr-flash-realtime';
+  const url = `${options.url || 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'}?model=${encodeURIComponent(model)}`;
+  immersiveLog('ASR start requested', { sessionId, model, sampleRate: options.sampleRate || 16000, hasApiKey: !!options.apiKey });
+  const ws = createDashScopeSocket({
+    apiKey: options.apiKey,
+    sessionId,
+    kind: 'asr',
+    url,
+    headers: {
+      'OpenAI-Beta': 'realtime=v1',
+    },
+    meta: { protocol: 'realtime' },
+  });
+  ws.on('open', () => {
+    immersiveLog('ASR websocket open', { sessionId });
+    ws.send(JSON.stringify(realtimeEvent('session.update', {
+      session: {
+        modalities: ['text'],
+        input_audio_format: 'pcm',
+        sample_rate: options.sampleRate || 16000,
+        input_audio_transcription: {
+          language: options.language || 'zh',
+        },
+        turn_detection: {
+          type: 'server_vad',
+          threshold: options.vadThreshold ?? 0.0,
+          silence_duration_ms: options.silenceDurationMs || 400,
+        },
+      },
+    })));
+    immersiveLog('ASR session.update sent', { sessionId });
+    emitImmersiveVoice(sessionId, 'asr:ready');
+  });
+  ws.on('message', raw => {
+    const parsed = parseAsrMessage(raw);
+    immersiveLog('ASR message', {
+      sessionId,
+      event: parsed?.event,
+      text: parsed?.text,
+      isSentenceEnd: parsed?.isSentenceEnd,
+      summary: summarizeAsrRaw(raw),
+    });
+    if (!parsed) return;
+    if (parsed.event === 'input_audio_buffer.speech_started') {
+      emitImmersiveVoice(sessionId, 'asr:speech-started', parsed);
+      return;
+    }
+    if (parsed.event === 'input_audio_buffer.speech_stopped') {
+      emitImmersiveVoice(sessionId, 'asr:speech-stopped', parsed);
+      return;
+    }
+    if (parsed.event === 'conversation.item.input_audio_transcription.text' && parsed.text) {
+      emitImmersiveVoice(sessionId, 'asr:transcript', parsed);
+      return;
+    }
+    if (parsed.event === 'conversation.item.input_audio_transcription.completed') {
+      emitImmersiveVoice(sessionId, 'asr:sentence-end', parsed);
+      return;
+    }
+    if (parsed.event === 'conversation.item.input_audio_transcription.failed' || parsed.event === 'error') {
+      emitImmersiveVoice(sessionId, 'asr:error', parsed);
+    }
+  });
+  return { ok: true, sessionId };
+}
+
+function startDashScopeTts(options = {}) {
+  const sessionId = options.sessionId || randomUUID();
+  const taskId = randomUUID();
+  immersiveLog('TTS start requested', { sessionId, taskId, model: options.model || 'cosyvoice-v3-flash', voice: options.voice || 'longanhuan_v3', textLength: String(options.text || '').length });
+  const ws = createDashScopeSocket({
+    apiKey: options.apiKey,
+    sessionId,
+    kind: 'tts',
+    url: options.url || 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
+    headers: {
+      'X-DashScope-DataInspection': 'enable',
+    },
+    meta: { taskId, text: options.text || '', taskStarted: false },
+  });
+  ws.on('open', () => {
+    immersiveLog('TTS websocket open', { sessionId, taskId });
+    const message = {
+      ...dashScopeHeader('run-task', taskId, 'duplex'),
+      payload: {
+        task_group: 'audio',
+        task: 'tts',
+        function: 'SpeechSynthesizer',
+        model: options.model || 'cosyvoice-v3-flash',
+        parameters: {
+          voice: options.voice || 'longanhuan_v3',
+          format: options.format || 'mp3',
+          sample_rate: options.sampleRate || 24000,
+          text_type: 'PlainText',
+          volume: 50,
+          rate: 1,
+          pitch: 1,
+        },
+        input: {},
+      },
+    };
+    ws.send(JSON.stringify(message));
+    immersiveLog('TTS run-task sent', { sessionId, taskId });
+    emitImmersiveVoice(sessionId, 'tts:ready');
+  });
+  ws.on('message', raw => {
+    const parsed = parseTtsMessage(raw);
+    immersiveLog('TTS message', {
+      sessionId,
+      event: parsed?.event,
+      hasAudio: !!parsed?.audioBase64,
+      done: !!parsed?.done,
+      failed: !!parsed?.failed,
+      binary: Buffer.isBuffer(raw),
+    });
+    if (!parsed) return;
+    if (parsed.started) {
+      const session = immersiveVoiceSessions.get(sessionId);
+      if (session && !session.taskStarted) {
+        session.taskStarted = true;
+        immersiveLog('TTS continue-task sent', { sessionId, taskId, textLength: String(session.text || '').length });
+        ws.send(JSON.stringify({
+          ...dashScopeHeader('continue-task', taskId, 'duplex'),
+          payload: {
+            input: {
+              text: session.text,
+            },
+          },
+        }));
+        session.finishTimer = setTimeout(() => {
+          const current = immersiveVoiceSessions.get(sessionId);
+          if (!current || current.ws !== ws) return;
+          immersiveLog('TTS finish-task sent', { sessionId, taskId });
+          ws.send(JSON.stringify(dashScopeFinishTask(taskId)));
+          current.finishTimer = null;
+        }, 300);
+      }
+    }
+    if (parsed.failed) {
+      immersiveWarn('TTS task failed', { sessionId, event: parsed.event, error: parsed.error });
+      emitImmersiveVoice(sessionId, 'tts:error', { error: parsed.error || 'TTS task failed' });
+      try { ws.close(); } catch {}
+      return;
+    }
+    if (parsed.audioBase64) emitImmersiveVoice(sessionId, 'tts:audio', { audioBase64: parsed.audioBase64, mimeType: 'audio/mpeg' });
+    if (parsed.done) {
+      emitImmersiveVoice(sessionId, 'tts:done');
+      try { ws.close(); } catch {}
+    }
+  });
+  return { ok: true, sessionId };
+}
+
+function stopImmersiveVoiceSession(sessionId, finish = true) {
+  const session = immersiveVoiceSessions.get(sessionId);
+  if (!session) return { ok: true };
+  try {
+    if (session.finishTimer) {
+      clearTimeout(session.finishTimer);
+      session.finishTimer = null;
+    }
+    if (finish && session.ws?.readyState === WebSocket.OPEN) {
+      if (session.protocol === 'realtime') {
+        session.ws.send(JSON.stringify(realtimeEvent('session.finish')));
+      } else if (session.taskId) {
+        session.ws.send(JSON.stringify(dashScopeFinishTask(session.taskId)));
+      }
+    }
+    session.ws?.close?.();
+  } catch {}
+  immersiveVoiceSessions.delete(sessionId);
+  return { ok: true };
+}
+
+function fetchText(url) {
+  return new Promise((resolve, reject) => {
+    const client = url.startsWith('https:') ? https : http;
+    const req = client.get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        req.destroy();
+        return fetchText(new URL(res.headers.location, url).toString()).then(resolve, reject);
+      }
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
+        resolve(data);
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => {
+      req.destroy();
+      reject(new Error('Request timeout'));
+    });
+  });
+}
+
+function fetchBuffer(url) {
+  return new Promise((resolve, reject) => {
+    const client = url.startsWith('https:') ? https : http;
+    const req = client.get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        req.destroy();
+        return fetchBuffer(new URL(res.headers.location, url).toString()).then(resolve, reject);
+      }
+      const chunks = [];
+      let total = 0;
+      res.on('data', chunk => {
+        total += chunk.length;
+        if (total > 5 * 1024 * 1024) {
+          req.destroy();
+          reject(new Error('Audio sample is too large'));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on('end', () => {
+        if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
+        resolve({
+          buffer: Buffer.concat(chunks),
+          contentType: res.headers['content-type'] || '',
+        });
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => {
+      req.destroy();
+      reject(new Error('Request timeout'));
+    });
+  });
+}
+
+function decodeHtml(text = '') {
+  return String(text)
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function parseCosyVoiceList(html) {
+  const rows = html.match(/<tr[\s\S]*?<\/tr>/g) || [];
+  const voices = [];
+  for (const row of rows) {
+    const audio = row.match(/<audio[\s\S]*?data-src=\\?"([^"\\]+)\\?"/)?.[1]
+      || row.match(/<audio[\s\S]*?src=\\?"([^"\\]+)\\?"/)?.[1]
+      || '';
+    const text = decodeHtml(row
+      .replace(/<span class=\\?"help-letter-space\\?"><\\?\/span>/g, '')
+      .replace(/<[^>]*>/g, '')
+      .replace(/\\"/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim());
+    const name = text.match(/名称：(.+?)voice参数：/)?.[1];
+    const id = text.match(/voice参数：([a-zA-Z0-9_]+)/)?.[1];
+    const trait = text.match(/特质：(.+?)年龄：/)?.[1] || '';
+    const age = text.match(/年龄：(.+?)语言：/)?.[1] || '';
+    const language = text.match(/语言：(.+?)(?:SSML|$)/)?.[1] || '';
+    if (!name || !id || !id.endsWith('_v3')) continue;
+    voices.push({
+      id,
+      name,
+      trait,
+      age,
+      language,
+      desc: [trait, age].filter(Boolean).join(' · '),
+      sampleUrl: decodeHtml(audio),
+    });
+  }
+  const seen = new Set();
+  return voices.filter(voice => {
+    if (seen.has(voice.id)) return false;
+    seen.add(voice.id);
+    return true;
+  });
+}
+
+async function getCosyVoiceList() {
+  const now = Date.now();
+  if (cosyVoiceListCache && now - cosyVoiceListCacheAt < 24 * 60 * 60 * 1000) {
+    return cosyVoiceListCache;
+  }
+  const html = await fetchText('https://help.aliyun.com/zh/model-studio/cosyvoice-voice-list');
+  const voices = parseCosyVoiceList(html);
+  if (voices.length === 0) throw new Error('No CosyVoice voices parsed');
+  cosyVoiceListCache = voices;
+  cosyVoiceListCacheAt = now;
+  return voices;
 }
 
 function hasModelConfigured() {
@@ -1694,6 +2168,28 @@ function setupIPC() {
     settingsCache = null; // Bust cache so renderer always gets latest from disk
     return getSettings();
   });
+  ipcMain.handle('get-cosyvoice-voices', async () => {
+    try {
+      const voices = await getCosyVoiceList();
+      return { ok: true, voices };
+    } catch (err) {
+      return { ok: false, error: err.message || String(err), voices: cosyVoiceListCache || [] };
+    }
+  });
+  ipcMain.handle('get-voice-sample-data-url', async (_, sampleUrl) => {
+    try {
+      const url = new URL(String(sampleUrl || ''));
+      if (url.protocol !== 'https:' || url.hostname !== 'help-static-aliyun-doc.aliyuncs.com') {
+        return { ok: false, error: 'Unsupported sample URL' };
+      }
+      const { buffer, contentType } = await fetchBuffer(url.toString());
+      const lowerPath = url.pathname.toLowerCase();
+      const mime = contentType.split(';')[0] || (lowerPath.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg');
+      return { ok: true, dataUrl: `data:${mime};base64,${buffer.toString('base64')}` };
+    } catch (err) {
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
   ipcMain.handle('save-settings', (_, settings) => {
     saveSettings(settings);
     return { ok: true };
@@ -2289,6 +2785,55 @@ function setupIPC() {
     mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
   });
   ipcMain.handle('window-close', () => mainWindow?.close());
+  ipcMain.handle('set-immersive-fullscreen', (_, enabled) => {
+    immersiveLog('set fullscreen', { enabled: !!enabled, hasWindow: !!mainWindow });
+    if (!mainWindow) return { ok: false };
+    mainWindow.setFullScreen(!!enabled);
+    return { ok: true };
+  });
+
+  // ── 沉浸语音模式 ──
+  ipcMain.handle('immersive-voice-start-asr', (_, options = {}) => {
+    immersiveLog('IPC start ASR', { model: options?.model, sampleRate: options?.sampleRate, hasApiKey: !!options?.apiKey });
+    try { return startDashScopeAsr(options); }
+    catch (err) {
+      immersiveWarn('IPC start ASR failed', err.message || String(err));
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
+  ipcMain.handle('immersive-voice-send-audio', (_, sessionId, chunk) => {
+    const session = immersiveVoiceSessions.get(sessionId);
+    if (!session?.ws || session.ws.readyState !== WebSocket.OPEN) return { ok: false, error: 'ASR session is not ready' };
+    const bytes = Buffer.from(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
+    session.audioFrames = (session.audioFrames || 0) + 1;
+    if (session.audioFrames <= 5 || session.audioFrames % 100 === 0) {
+      immersiveLog('IPC ASR audio chunk', { sessionId, frame: session.audioFrames, bytes: bytes.length, protocol: session.protocol });
+    }
+    if (session.protocol === 'realtime') {
+      session.ws.send(JSON.stringify(realtimeEvent('input_audio_buffer.append', {
+        audio: bytes.toString('base64'),
+      })));
+    } else {
+      session.ws.send(bytes);
+    }
+    return { ok: true };
+  });
+  ipcMain.handle('immersive-voice-stop-asr', (_, sessionId) => {
+    immersiveLog('IPC stop ASR', { sessionId });
+    return stopImmersiveVoiceSession(sessionId, true);
+  });
+  ipcMain.handle('immersive-voice-start-tts', (_, options = {}) => {
+    immersiveLog('IPC start TTS', { model: options?.model, voice: options?.voice, textLength: String(options?.text || '').length, hasApiKey: !!options?.apiKey });
+    try { return startDashScopeTts(options); }
+    catch (err) {
+      immersiveWarn('IPC start TTS failed', err.message || String(err));
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
+  ipcMain.handle('immersive-voice-stop-tts', (_, sessionId) => {
+    immersiveLog('IPC stop TTS', { sessionId });
+    return stopImmersiveVoiceSession(sessionId, false);
+  });
 
 // ═══════════════════════════════════════════════════════════════
 // 12. 窗口管理

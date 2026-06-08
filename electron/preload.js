@@ -65,6 +65,8 @@ contextBridge.exposeInMainWorld('clawshell', {
   openDataDir: () => ipcRenderer.invoke('open-data-dir'),
   openLogsDir: () => ipcRenderer.invoke('open-logs-dir'),
   getSettings: () => ipcRenderer.invoke('get-settings'),
+  getCosyVoiceVoices: () => ipcRenderer.invoke('get-cosyvoice-voices'),
+  getVoiceSampleDataUrl: (sampleUrl) => ipcRenderer.invoke('get-voice-sample-data-url', sampleUrl),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
 
   // ── OpenClaw 核心版本管理 ──
@@ -102,6 +104,19 @@ contextBridge.exposeInMainWorld('clawshell', {
   windowMinimize: () => ipcRenderer.invoke('window-minimize'),
   windowMaximize: () => ipcRenderer.invoke('window-maximize'),
   windowClose: () => ipcRenderer.invoke('window-close'),
+  setImmersiveFullscreen: (enabled) => ipcRenderer.invoke('set-immersive-fullscreen', enabled),
+
+  // ── 沉浸语音模式 ──
+  immersiveVoiceStartAsr: (options) => ipcRenderer.invoke('immersive-voice-start-asr', options),
+  immersiveVoiceSendAudio: (sessionId, chunk) => ipcRenderer.invoke('immersive-voice-send-audio', sessionId, chunk),
+  immersiveVoiceStopAsr: (sessionId) => ipcRenderer.invoke('immersive-voice-stop-asr', sessionId),
+  immersiveVoiceStartTts: (options) => ipcRenderer.invoke('immersive-voice-start-tts', options),
+  immersiveVoiceStopTts: (sessionId) => ipcRenderer.invoke('immersive-voice-stop-tts', sessionId),
+  onImmersiveVoiceEvent: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('immersive-voice-event', handler);
+    return () => ipcRenderer.removeListener('immersive-voice-event', handler);
+  },
 
   // ── 事件监听（主进程 → 渲染进程推送） ──
 
