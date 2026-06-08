@@ -464,6 +464,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!gw.connected.value) return
     const msg = text.trim()
     if (!msg && (!atts || atts.length === 0)) return
+    const transcriptText = (atts || []).find(att => att?.transcriptText)?.transcriptText?.trim() || ''
 
     const userContent = []
     if (msg) userContent.push({ type: 'text', text: msg })
@@ -493,7 +494,7 @@ export const useChatStore = defineStore('chat', () => {
     }]
 
     const apiAttachments = atts && atts.length > 0
-      ? atts.map(att => {
+      ? atts.filter(att => !att.localOnly).map(att => {
           const base64Idx = att.dataUrl?.indexOf(';base64,')
           if (base64Idx == null || base64Idx < 5) return null
           const mime = att.dataUrl.slice(5, base64Idx) // skip "data:"
@@ -522,7 +523,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const sendParams = {
         sessionKey: currentSessionKey.value,
-        message: msg || (apiAttachments?.length ? '[voice message]' : ''),
+        message: msg || transcriptText || (apiAttachments?.length ? '[voice message]' : ''),
         deliver: false,
         idempotencyKey: newRunId,
       }

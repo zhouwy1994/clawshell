@@ -55,6 +55,7 @@ export const ipc = window.clawshell || {
   setImmersiveFullscreen: async () => ({ ok: false }),
   immersiveVoiceStartAsr: async () => ({ ok: false }),
   immersiveVoiceSendAudio: async () => ({ ok: false }),
+  immersiveVoiceCommitAudio: async () => ({ ok: false }),
   immersiveVoiceStopAsr: async () => ({ ok: false }),
   immersiveVoiceStartTts: async () => ({ ok: false }),
   immersiveVoiceStopTts: async () => ({ ok: false }),

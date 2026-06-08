@@ -2822,6 +2822,14 @@ function setupIPC() {
     }
     return { ok: true };
   });
+  ipcMain.handle('immersive-voice-commit-audio', (_, sessionId) => {
+    const session = immersiveVoiceSessions.get(sessionId);
+    if (!session?.ws || session.ws.readyState !== WebSocket.OPEN) return { ok: false, error: 'ASR session is not ready' };
+    if (session.protocol === 'realtime') {
+      session.ws.send(JSON.stringify(realtimeEvent('input_audio_buffer.commit')));
+    }
+    return { ok: true };
+  });
   ipcMain.handle('immersive-voice-stop-asr', (_, sessionId) => {
     immersiveLog('IPC stop ASR', { sessionId });
     return stopImmersiveVoiceSession(sessionId, true);

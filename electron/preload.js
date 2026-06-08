@@ -109,6 +109,7 @@ contextBridge.exposeInMainWorld('clawshell', {
   // ── 沉浸语音模式 ──
   immersiveVoiceStartAsr: (options) => ipcRenderer.invoke('immersive-voice-start-asr', options),
   immersiveVoiceSendAudio: (sessionId, chunk) => ipcRenderer.invoke('immersive-voice-send-audio', sessionId, chunk),
+  immersiveVoiceCommitAudio: (sessionId) => ipcRenderer.invoke('immersive-voice-commit-audio', sessionId),
   immersiveVoiceStopAsr: (sessionId) => ipcRenderer.invoke('immersive-voice-stop-asr', sessionId),
   immersiveVoiceStartTts: (options) => ipcRenderer.invoke('immersive-voice-start-tts', options),
   immersiveVoiceStopTts: (sessionId) => ipcRenderer.invoke('immersive-voice-stop-tts', sessionId),
