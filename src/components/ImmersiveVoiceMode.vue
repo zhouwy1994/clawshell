@@ -1,31 +1,93 @@
 <template>
   <div class="immersive-voice" @dblclick="exit">
-    <div class="sphere-glow"></div>
-    <canvas ref="canvasRef" class="star-canvas" width="600" height="600"></canvas>
-    <div class="immersive-top">
-      <div class="assistant-title">{{ assistantName || '助手' }}</div>
-    </div>
+    <div class="ambient-backdrop"></div>
+    <div class="ambient-grid"></div>
+    <div class="ambient-vignette"></div>
+    <div class="ambient-scanlines"></div>
 
-    <div class="status-pill" :class="voiceState">
-      <span class="status-dot"></span>
-      <span>{{ statusText }}</span>
-    </div>
-
-    <div v-if="showText" class="transcript-panel">
-      <div v-if="partialText" class="transcript-item user partial">
-        <span class="role">我</span>
-        <p>{{ partialText }}</p>
+    <header class="top-hud">
+      <div class="hud-brand">
+        <div class="brand-mark">{{ assistantInitial }}</div>
+        <div class="brand-copy">
+          <span class="brand-kicker">{{ assistantName || '助手' }}</span>
+          <strong class="brand-title">IMMERSIVE SESSION</strong>
+        </div>
       </div>
-      <div v-for="(item, i) in transcriptItems" :key="i" class="transcript-item" :class="item.role">
-        <span class="role">{{ item.role === 'user' ? '我' : assistantName || '助手' }}</span>
-        <p>{{ item.text }}</p>
-      </div>
-    </div>
 
-    <div v-if="activeTranscript" class="transcript-caption">
-      <span class="caption-role">我</span>
-      <span class="caption-text">{{ activeTranscript }}</span>
-    </div>
+      <div class="hud-chip">
+        <span class="chip-label">MODEL</span>
+        <span class="chip-value">{{ modelName || '未指定模型' }}</span>
+      </div>
+    </header>
+
+    <aside class="telemetry-panel telemetry-left">
+      <div class="panel-header">
+        <span class="panel-kicker">VOICE LINK</span>
+        <span class="panel-code">{{ stateCode }}</span>
+      </div>
+
+      <div class="metric-block primary">
+        <span class="metric-label">状态</span>
+        <strong class="metric-value">{{ statusText }}</strong>
+        <p class="metric-note">{{ statusDescription }}</p>
+        <div class="metric-tags">
+          <span class="metric-tag">{{ recognitionLabel }}</span>
+          <span class="metric-tag">{{ ttsLabel }}</span>
+          <span class="metric-tag">{{ gatewayLabel }}</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="orbital-stage">
+      <div class="orbital-shell">
+        <div class="sphere-glow"></div>
+        <div class="orbit orbit-a"></div>
+        <div class="orbit orbit-b"></div>
+        <div class="orbit orbit-c"></div>
+        <div class="targeting-ring targeting-ring-a"></div>
+        <div class="targeting-ring targeting-ring-b"></div>
+        <canvas ref="canvasRef" class="star-canvas" width="600" height="600"></canvas>
+      </div>
+    </main>
+
+    <aside v-if="showText" class="telemetry-panel telemetry-right">
+      <div class="panel-header">
+        <span class="panel-kicker">CONVERSATION FLOW</span>
+        <span class="panel-code">{{ transcriptItems.length + (partialText ? 1 : 0) }}</span>
+      </div>
+
+      <div class="transcript-stream">
+        <div v-if="partialText" class="transcript-item user partial">
+          <span class="role">用户输入</span>
+          <p>{{ partialText }}</p>
+        </div>
+        <div v-for="(item, i) in transcriptItems" :key="i" class="transcript-item" :class="item.role">
+          <span class="role">{{ item.role === 'user' ? '用户' : (assistantName || '助手') }}</span>
+          <p>{{ item.text }}</p>
+        </div>
+      </div>
+    </aside>
+
+    <footer class="bottom-hud">
+      <div class="caption-deck" v-if="activeTranscript || latestAssistantText">
+        <div class="caption-card active" v-if="activeTranscript">
+          <span class="caption-label">INPUT</span>
+          <p class="caption-text">{{ activeTranscript }}</p>
+        </div>
+        <div class="caption-card" v-if="latestAssistantText">
+          <span class="caption-label">OUTPUT</span>
+          <p class="caption-text">{{ latestAssistantText }}</p>
+        </div>
+      </div>
+
+      <div class="status-bar">
+        <div class="status-pill" :class="voiceState">
+          <span class="status-dot"></span>
+          <span>{{ statusText }}</span>
+        </div>
+        <div class="status-line">{{ assistantName || '助手' }}</div>
+      </div>
+    </footer>
 
     <div v-if="error" class="immersive-error">{{ error }}</div>
   </div>
@@ -104,21 +166,21 @@ class SphereParticle {
     const randomType = Math.random()
     if (randomType < 0.4) {
       this.type = 0
-      this.color = '#ff4d4d'
+      this.color = '#ff5a36'
     } else if (randomType < 0.8) {
       this.type = 1
-      this.color = '#ffffff'
+      this.color = '#f5fbff'
     } else {
       this.type = 2
-      this.color = '#000000'
+      this.color = '#08111d'
     }
     this.size = Math.random() * 1.5 + 0.5
   }
 
   update(time, rx, ry, voicePulse) {
     if (this.type === 0) {
-      const hue = Math.sin(time * 0.0005 + this.bx * 0.03) * 30 + 195
-      this.color = `hsl(${hue},90%,65%)`
+      const hue = Math.sin(time * 0.0005 + this.bx * 0.03) * 20 + 192
+      this.color = `hsl(${hue}, 92%, 64%)`
     }
     const speechWave = voiceState.value === 'thinking' || voiceState.value === 'speaking' ? voicePulse * 20 : 0
     const wave = Math.sin(time * 0.002 + (this.bx + this.by + this.bz) * 0.01) * (12 + speechWave)
@@ -159,7 +221,7 @@ class SphereParticle {
     const projected = this.project(cx, cy)
     if (this.type === 2) {
       ctx.globalAlpha = 1
-      ctx.strokeStyle = 'rgba(255,255,255,0.15)'
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)'
       ctx.lineWidth = 0.5
       ctx.beginPath()
       ctx.arc(projected.x, projected.y, Math.max(0.1, projected.size), 0, Math.PI * 2)
@@ -187,13 +249,40 @@ const statusText = computed(() => {
   if (voiceState.value === 'thinking') return '正在思考'
   if (voiceState.value === 'speaking') return '正在回答'
   if (voiceState.value === 'connecting') return '正在连接语音服务'
-  return props.modelName || '模型'
+  return props.modelName || '待机中'
 })
 
 const activeTranscript = computed(() => {
   if (partialText.value) return partialText.value
   const latest = transcriptItems.value[transcriptItems.value.length - 1]
   return latest?.role === 'user' ? latest.text : ''
+})
+
+const assistantInitial = computed(() => (props.assistantName || '助手').slice(0, 1).toUpperCase())
+
+const stateCode = computed(() => {
+  if (voiceState.value === 'listening') return 'LISTEN'
+  if (voiceState.value === 'thinking') return 'THINK'
+  if (voiceState.value === 'speaking') return 'SPEAK'
+  if (voiceState.value === 'connecting') return 'LINK'
+  return 'IDLE'
+})
+
+const statusDescription = computed(() => {
+  if (voiceState.value === 'listening') return '实时捕捉你的语音，等待下一句输入完成。'
+  if (voiceState.value === 'thinking') return '语音已封存，正在等待模型生成当前轮回复。'
+  if (voiceState.value === 'speaking') return '回复内容正在通过语音通道播报。'
+  if (voiceState.value === 'connecting') return '正在建立识别与播报链路。'
+  return '沉浸模式待命中。'
+})
+
+const recognitionLabel = computed(() => (recognitionPaused ? '已封存' : '在线'))
+const ttsLabel = computed(() => (voiceState.value === 'speaking' ? '播报中' : '待机'))
+const gatewayLabel = computed(() => (gatewayStore.mode === 'remote' ? '远程' : '本地'))
+
+const latestAssistantText = computed(() => {
+  const latest = [...transcriptItems.value].reverse().find(item => item.role === 'assistant')
+  return latest?.text || ''
 })
 
 function appendTranscript(role, text) {
@@ -338,7 +427,7 @@ async function startAsr() {
   })
   showText.value = settings?.voice?.showImmersiveText !== false
   const apiKey = settings?.voice?.dashscopeApiKey || ''
-  if (!apiKey) throw new Error('请先在设置 > 语音设置 中填写百炼 DashScope API KEY')
+  if (!apiKey) throw new Error('请先在设置 > 语音设置中填写百炼 DashScope API KEY')
   await startMicrophone()
   log('request ASR websocket session')
   const res = await ipc.immersiveVoiceStartAsr({
@@ -576,8 +665,7 @@ function playTtsChunks() {
     URL.revokeObjectURL(audio.src)
     resumeRecognition('tts-fallback-error')
   }
-  audio.play().then(() => {
-  }).catch(err => {
+  audio.play().catch(err => {
     warn('tts blob play rejected', err)
     resumeRecognition('tts-fallback-play-error')
   })
@@ -639,7 +727,7 @@ function buildParticles() {
 function resizeSphere() {
   const canvas = canvasRef.value
   if (!canvas) return
-  const size = window.innerWidth < 768 ? 320 : 500
+  const size = window.innerWidth < 768 ? 320 : 560
   canvas.style.width = `${size}px`
   canvas.style.height = `${size}px`
 }
@@ -806,34 +894,313 @@ onUnmounted(() => {
   inset: 0;
   z-index: 9999;
   overflow: hidden;
-  color: #fff;
-  background: #05050a;
+  color: #f8fbff;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(18, 37, 76, 0.42), transparent 34%),
+    radial-gradient(circle at 18% 22%, rgba(0, 194, 255, 0.12), transparent 26%),
+    radial-gradient(circle at 82% 18%, rgba(125, 92, 255, 0.12), transparent 24%),
+    linear-gradient(180deg, #04101d 0%, #02060e 46%, #010205 100%);
   user-select: none;
 }
 
-.sphere-glow {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  z-index: 4;
-  width: 400px;
-  height: 400px;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(255, 77, 77, 0.12) 0%, transparent 70%);
-  filter: blur(60px);
-  animation: glowPulse 5s ease-in-out infinite;
+.ambient-backdrop,
+.ambient-grid,
+.ambient-vignette,
+.ambient-scanlines {
+  position: absolute;
+  inset: 0;
   pointer-events: none;
 }
 
+.ambient-backdrop {
+  background:
+    radial-gradient(circle at 50% 56%, rgba(255, 110, 46, 0.08), transparent 20%),
+    radial-gradient(circle at 50% 50%, rgba(42, 225, 255, 0.05), transparent 34%);
+  filter: blur(18px);
+}
+
+.ambient-grid {
+  opacity: 0.28;
+  background-image:
+    linear-gradient(rgba(89, 164, 255, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(89, 164, 255, 0.07) 1px, transparent 1px);
+  background-size: 72px 72px;
+  mask-image: radial-gradient(circle at center, rgba(0, 0, 0, 0.92), transparent 86%);
+}
+
+.ambient-vignette {
+  background: radial-gradient(circle at center, transparent 54%, rgba(0, 0, 0, 0.48) 100%);
+}
+
+.ambient-scanlines {
+  opacity: 0.08;
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.15) 0,
+    rgba(255, 255, 255, 0.15) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+}
+
+.top-hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 14;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 18px;
+  align-items: center;
+  padding: 24px 28px 0;
+}
+
+.hud-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  border: 1px solid rgba(116, 201, 255, 0.28);
+  background: linear-gradient(180deg, rgba(22, 46, 86, 0.88), rgba(7, 14, 24, 0.9));
+  box-shadow:
+    inset 0 0 22px rgba(62, 190, 255, 0.15),
+    0 0 30px rgba(0, 147, 255, 0.14);
+  font-size: 18px;
+  font-weight: 700;
+  color: #d9f7ff;
+}
+
+.brand-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.brand-kicker,
+.chip-label,
+.panel-kicker,
+.metric-label,
+.caption-label,
+.core-kicker {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: rgba(177, 214, 255, 0.58);
+}
+
+.brand-title,
+.chip-value {
+  font-size: 15px;
+  color: #f4fbff;
+}
+
+.brand-title {
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  color: rgba(177, 214, 255, 0.5);
+}
+
+.brand-kicker {
+  font-size: 16px;
+  letter-spacing: 0.02em;
+  color: #f4fbff;
+}
+
+.hud-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 0 14px;
+  border: 1px solid rgba(104, 182, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(7, 14, 24, 0.7);
+  box-shadow: inset 0 0 28px rgba(32, 96, 180, 0.14);
+  backdrop-filter: blur(20px);
+}
+
+.telemetry-panel {
+  position: absolute;
+  z-index: 12;
+  top: 108px;
+  width: min(320px, calc(100vw - 48px));
+  padding: 18px;
+  border: 1px solid rgba(97, 161, 228, 0.18);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(8, 18, 34, 0.84), rgba(4, 9, 18, 0.7));
+  box-shadow:
+    inset 0 0 32px rgba(31, 94, 180, 0.12),
+    0 16px 50px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(22px);
+}
+
+.telemetry-left {
+  left: 28px;
+}
+
+.telemetry-right {
+  right: 28px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.panel-code {
+  font-size: 12px;
+  font-weight: 700;
+  color: #68d7ff;
+}
+
+.metric-block.primary {
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(12, 23, 43, 0.72);
+  border: 1px solid rgba(104, 182, 255, 0.14);
+}
+
+.metric-value {
+  display: block;
+  margin-top: 6px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #f7fbff;
+}
+
+.metric-value.small {
+  margin-top: 4px;
+  font-size: 14px;
+}
+
+.metric-note {
+  margin: 10px 0 0;
+  color: rgba(212, 232, 255, 0.72);
+  line-height: 1.65;
+  font-size: 13px;
+}
+
+.metric-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.metric-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(7, 15, 28, 0.8);
+  color: rgba(236, 246, 255, 0.82);
+  font-size: 12px;
+}
+
+.orbital-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  padding: 120px 340px 180px;
+}
+
+.orbital-shell {
+  position: relative;
+  width: min(68vh, 760px);
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-items: center;
+}
+
+.sphere-glow,
+.orbit,
+.targeting-ring,
 .star-canvas {
-  position: fixed;
-  top: 50%;
+  position: absolute;
   left: 50%;
-  z-index: 5;
-  width: 500px;
-  height: 500px;
+  top: 50%;
   transform: translate(-50%, -50%);
+}
+
+.sphere-glow {
+  z-index: 4;
+  width: 68%;
+  height: 68%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, rgba(255, 101, 38, 0.28) 0%, rgba(255, 132, 76, 0.1) 36%, transparent 70%);
+  filter: blur(70px);
+  animation: glowPulse 6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.orbit,
+.targeting-ring {
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.orbit-a,
+.orbit-b,
+.orbit-c {
+  z-index: 3;
+  border: 1px solid rgba(98, 202, 255, 0.14);
+  box-shadow: inset 0 0 30px rgba(52, 170, 255, 0.06);
+}
+
+.orbit-a {
+  width: 88%;
+  height: 88%;
+  animation: orbitRotate 28s linear infinite;
+}
+
+.orbit-b {
+  width: 102%;
+  height: 72%;
+  transform: translate(-50%, -50%) rotate(18deg);
+  animation: orbitRotateReverse 36s linear infinite;
+}
+
+.orbit-c {
+  width: 72%;
+  height: 102%;
+  transform: translate(-50%, -50%) rotate(-22deg);
+  animation: orbitRotate 24s linear infinite;
+}
+
+.targeting-ring-a,
+.targeting-ring-b {
+  z-index: 6;
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.targeting-ring-a {
+  width: 118%;
+  height: 118%;
+}
+
+.targeting-ring-b {
+  width: 42%;
+  height: 42%;
+}
+
+.star-canvas {
+  z-index: 5;
+  width: min(58vh, 560px);
+  height: min(58vh, 560px);
   cursor: grab;
   touch-action: none;
 }
@@ -842,60 +1209,72 @@ onUnmounted(() => {
   cursor: grabbing;
 }
 
-@keyframes glowPulse {
-  0%, 100% {
-    transform: translate(-50%, -50%) scale(1);
-    opacity: 0.6;
-  }
-  50% {
-    transform: translate(-50%, -50%) scale(1.15);
-    opacity: 1;
-  }
-}
-
-.immersive-top {
-  position: relative;
-  z-index: 10;
+.bottom-hud {
+  position: absolute;
+  left: 28px;
+  right: 28px;
+  bottom: 26px;
+  z-index: 14;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.caption-deck {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.caption-card {
+  min-height: 86px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(9, 18, 34, 0.84), rgba(5, 10, 18, 0.72));
+  backdrop-filter: blur(18px);
+}
+
+.caption-card.active {
+  border-color: rgba(104, 214, 255, 0.18);
+}
+
+.caption-text {
+  margin: 8px 0 0;
+  color: rgba(245, 250, 255, 0.94);
+  line-height: 1.65;
+  word-break: break-word;
+}
+
+.status-bar {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 14px;
   align-items: center;
-  padding: 24px 28px;
-}
-
-@media (max-width: 768px) {
-  .sphere-glow {
-    width: 260px;
-    height: 260px;
-  }
-
-  .star-canvas {
-    width: 320px;
-    height: 320px;
-  }
-}
-
-.assistant-title {
-  text-align: center;
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-shadow: 0 0 22px rgba(255, 132, 56, 0.8);
 }
 
 .status-pill {
-  position: absolute;
-  left: 50%;
-  bottom: 56px;
-  transform: translateX(-50%);
-  z-index: 8;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 16px;
+  min-height: 44px;
+  padding: 0 16px;
   border-radius: 999px;
-  background: rgba(5, 10, 22, 0.66);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(104, 182, 255, 0.18);
+  background: rgba(7, 14, 24, 0.74);
   backdrop-filter: blur(16px);
+}
+
+.status-line {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(5, 11, 20, 0.7);
+  color: rgba(221, 236, 255, 0.78);
+  font-weight: 600;
 }
 
 .status-dot {
@@ -903,7 +1282,7 @@ onUnmounted(() => {
   height: 9px;
   border-radius: 50%;
   background: #29e0c2;
-  box-shadow: 0 0 14px #29e0c2;
+  box-shadow: 0 0 16px #29e0c2;
 }
 
 .status-pill.thinking .status-dot,
@@ -913,72 +1292,29 @@ onUnmounted(() => {
   animation: statusPulse 0.8s infinite alternate;
 }
 
-@keyframes statusPulse {
-  from { transform: scale(0.8); opacity: 0.65; }
-  to { transform: scale(1.35); opacity: 1; }
-}
-
-.transcript-panel {
-  position: absolute;
-  z-index: 8;
-  right: 28px;
-  top: 90px;
-  width: min(360px, calc(100vw - 56px));
-  max-height: calc(100vh - 180px);
-  overflow: auto;
+.transcript-stream {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  max-height: calc(100vh - 260px);
+  overflow: auto;
+  padding-right: 2px;
 }
 
-.transcript-caption {
-  position: absolute;
-  z-index: 9;
-  left: 50%;
-  bottom: 96px;
-  transform: translateX(-50%);
-  max-width: min(820px, calc(100vw - 72px));
-  padding: 12px 18px;
-  border-radius: 18px;
-  background: rgba(5, 10, 22, 0.72);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  backdrop-filter: blur(18px);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+.transcript-stream::-webkit-scrollbar {
+  width: 8px;
 }
 
-.caption-role {
-  display: inline-block;
-  margin-right: 10px;
-  color: rgba(255, 255, 255, 0.56);
-  font-size: 12px;
-  letter-spacing: 0.08em;
-}
-
-.caption-text {
-  color: rgba(255, 255, 255, 0.96);
-  line-height: 1.5;
-  word-break: break-word;
+.transcript-stream::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(111, 173, 255, 0.18);
 }
 
 .transcript-item {
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(12, 18, 34, 0.62);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  backdrop-filter: blur(16px);
-}
-
-.transcript-item .role {
-  display: block;
-  margin-bottom: 4px;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.58);
-}
-
-.transcript-item p {
-  margin: 0;
-  color: rgba(255, 255, 255, 0.9);
-  line-height: 1.55;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(10, 19, 35, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .transcript-item.user {
@@ -986,24 +1322,150 @@ onUnmounted(() => {
 }
 
 .transcript-item.assistant {
-  border-color: rgba(255, 138, 42, 0.24);
+  border-color: rgba(255, 138, 42, 0.2);
 }
 
 .transcript-item.partial {
-  opacity: 0.82;
+  opacity: 0.84;
+}
+
+.transcript-item .role {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: rgba(175, 210, 255, 0.54);
+}
+
+.transcript-item p {
+  margin: 0;
+  color: rgba(243, 249, 255, 0.92);
+  line-height: 1.62;
 }
 
 .immersive-error {
   position: absolute;
-  z-index: 12;
+  z-index: 20;
   left: 50%;
-  top: 54%;
-  transform: translateX(-50%);
-  max-width: 560px;
-  padding: 12px 16px;
-  border-radius: 12px;
-  background: rgba(127, 29, 29, 0.76);
-  border: 1px solid rgba(248, 113, 113, 0.4);
-  color: #fff;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: min(560px, calc(100vw - 48px));
+  padding: 14px 18px;
+  border-radius: 14px;
+  background: rgba(103, 22, 27, 0.82);
+  border: 1px solid rgba(248, 113, 113, 0.34);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+}
+
+@keyframes glowPulse {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0.58;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.14);
+    opacity: 1;
+  }
+}
+
+@keyframes orbitRotate {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+@keyframes orbitRotateReverse {
+  from {
+    transform: translate(-50%, -50%) rotate(18deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(-342deg);
+  }
+}
+
+@keyframes statusPulse {
+  from {
+    transform: scale(0.82);
+    opacity: 0.68;
+  }
+  to {
+    transform: scale(1.34);
+    opacity: 1;
+  }
+}
+
+@media (max-width: 1180px) {
+  .orbital-stage {
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+
+  .telemetry-panel {
+    width: min(280px, calc(100vw - 40px));
+  }
+}
+
+@media (max-width: 980px) {
+  .top-hud {
+    grid-template-columns: 1fr;
+  }
+
+  .telemetry-left,
+  .telemetry-right {
+    position: static;
+    width: auto;
+  }
+
+  .immersive-voice {
+    overflow: auto;
+  }
+
+  .orbital-stage {
+    position: relative;
+    inset: auto;
+    padding: 24px 20px 12px;
+    min-height: 560px;
+  }
+
+  .bottom-hud {
+    position: relative;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    padding: 0 20px 24px;
+  }
+
+  .caption-deck,
+  .status-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .telemetry-panel {
+    margin: 18px 20px 0;
+  }
+}
+
+@media (max-width: 768px) {
+  .top-hud {
+    padding: 18px 20px 0;
+  }
+
+  .orbital-shell {
+    width: min(92vw, 420px);
+  }
+
+  .star-canvas {
+    width: min(78vw, 320px);
+    height: min(78vw, 320px);
+  }
+
+  .sphere-glow {
+    width: 74%;
+    height: 74%;
+  }
+
 }
 </style>

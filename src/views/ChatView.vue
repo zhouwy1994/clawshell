@@ -55,11 +55,13 @@
             v-html="getIcon('wrench', 16)"
           ></button>
           <button
-            class="toggle-btn immersive-btn"
+            class="immersive-entry"
             :title="t('chat.immersiveMode')"
             @click="immersiveVisible = true"
-            v-html="getIcon('radio', 16)"
-          ></button>
+          >
+            <span class="immersive-entry-icon" v-html="getIcon('volume-2', 16)"></span>
+            <span class="immersive-entry-text">{{ t('chat.immersiveMode') }}</span>
+          </button>
         </div>
       </div>
 
@@ -364,7 +366,7 @@ onUnmounted(() => {
 .chat-header-right {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
 }
 
 .toggle-btn {
@@ -389,6 +391,50 @@ onUnmounted(() => {
 }
 
 .toggle-btn :deep(svg) { display: block; }
+
+.immersive-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px 0 12px;
+  border: 1px solid var(--immersive-entry-border, transparent);
+  border-radius: 999px;
+  color: #fff;
+  background: var(--immersive-entry-bg);
+  box-shadow: var(--immersive-entry-shadow);
+  transition: transform 0.15s, box-shadow 0.15s, filter 0.15s, border-color 0.15s;
+}
+
+.immersive-entry:hover {
+  transform: translateY(-1px);
+  filter: saturate(1.06);
+  box-shadow: var(--immersive-entry-shadow-hover);
+}
+
+.immersive-entry:active {
+  transform: translateY(0);
+}
+
+.immersive-entry-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--immersive-entry-icon-bg, rgba(255, 255, 255, 0.16));
+}
+
+.immersive-entry-icon :deep(svg) {
+  display: block;
+}
+
+.immersive-entry-text {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
 
 .thinking-select-wrap {
   display: flex;
@@ -465,4 +511,17 @@ onUnmounted(() => {
 }
 
 .chat-error :deep(svg) { display: block; flex-shrink: 0; }
+
+@media (max-width: 960px) {
+  .chat-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .chat-header-right {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+}
 </style>

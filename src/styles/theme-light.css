@@ -65,4 +65,17 @@
   --chat-code-bg: #f0f1f7;
   --chat-tool-card-bg: var(--color-bg-tertiary);
   --chat-tool-card-border: var(--color-border-light);
+
+  /* Immersive entry */
+  --immersive-entry-border: transparent;
+  --immersive-entry-bg:
+    linear-gradient(135deg, rgba(255, 107, 53, 0.96), rgba(255, 138, 42, 0.92)),
+    linear-gradient(135deg, rgba(108, 92, 231, 0.18), rgba(0, 194, 168, 0.12));
+  --immersive-entry-shadow:
+    0 10px 22px rgba(255, 107, 53, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  --immersive-entry-shadow-hover:
+    0 14px 28px rgba(255, 107, 53, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  --immersive-entry-icon-bg: rgba(255, 255, 255, 0.16);
 }

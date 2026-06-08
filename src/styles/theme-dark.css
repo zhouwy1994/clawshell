@@ -61,4 +61,19 @@
 
   /* Chat */
   --chat-code-bg: #1e1e2e;
+
+  /* Immersive entry */
+  --immersive-entry-border: rgba(154, 141, 255, 0.28);
+  --immersive-entry-bg:
+    linear-gradient(135deg, rgba(139, 124, 255, 0.94), rgba(41, 224, 194, 0.72)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0));
+  --immersive-entry-shadow:
+    0 14px 30px rgba(139, 124, 255, 0.28),
+    0 0 0 1px rgba(255, 255, 255, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  --immersive-entry-shadow-hover:
+    0 18px 34px rgba(139, 124, 255, 0.34),
+    0 0 0 1px rgba(154, 141, 255, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  --immersive-entry-icon-bg: rgba(10, 14, 28, 0.18);
 }
