@@ -502,10 +502,12 @@ function parseAsrMessage(raw) {
   }
   if (event === 'conversation.item.input_audio_transcription.completed') {
     const transcript = String(data?.transcript || '').trim();
+    const emotion = String(data?.emotion || '').trim();
     return {
       event,
       text: transcript,
       transcript,
+      emotion,
       isSentenceEnd: true,
       rawEvent: event,
       raw: data,
@@ -542,6 +544,7 @@ function summarizeAsrRaw(raw) {
       text: parsed?.text,
       stash: parsed?.stash,
       transcript: parsed?.transcript,
+      emotion: parsed?.emotion,
       error: parsed?.error?.message || parsed?.error,
       raw: text.slice(0, 500),
     };
@@ -626,6 +629,7 @@ function startDashScopeAsr(options = {}) {
       sessionId,
       event: parsed?.event,
       text: parsed?.text,
+      emotion: parsed?.emotion,
       isSentenceEnd: parsed?.isSentenceEnd,
       summary: summarizeAsrRaw(raw),
     });

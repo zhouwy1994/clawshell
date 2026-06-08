@@ -95,6 +95,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { currentLocale } from '@/i18n'
 import { ipc } from '@/lib/ipc'
 import { useChatStore } from '@/stores/chat'
 import { useGatewayStore } from '@/stores/gateway'
@@ -280,6 +281,16 @@ const recognitionLabel = computed(() => (recognitionPaused ? '已封存' : '在�
 const ttsLabel = computed(() => (voiceState.value === 'speaking' ? '播报中' : '待机'))
 const gatewayLabel = computed(() => (gatewayStore.mode === 'remote' ? '远程' : '本地'))
 
+const ASR_EMOTION_LABELS = {
+  surprised: { zh: '惊讶', en: 'surprised' },
+  neutral: { zh: '平静', en: 'neutral' },
+  happy: { zh: '愉快', en: 'happy' },
+  sad: { zh: '悲伤', en: 'sad' },
+  disgusted: { zh: '厌恶', en: 'disgusted' },
+  angry: { zh: '愤怒', en: 'angry' },
+  fearful: { zh: '恐惧', en: 'fearful' },
+}
+
 const latestAssistantText = computed(() => {
   const latest = [...transcriptItems.value].reverse().find(item => item.role === 'assistant')
   return latest?.text || ''
@@ -306,9 +317,19 @@ function resumeRecognition(reason) {
   log('recognition resumed', { reason, voiceState: voiceState.value })
 }
 
-async function commitPendingSpeech(source, value = partialText.value) {
+function buildBackendSpeechText(text, emotion) {
+  const emotionInfo = ASR_EMOTION_LABELS[String(emotion || '').trim().toLowerCase()]
+  if (!emotionInfo) return text
+  const isEnglish = currentLocale.value === 'en'
+  const label = isEnglish ? emotionInfo.en : emotionInfo.zh
+  const prefix = isEnglish ? 'User sentiment' : '用户情绪'
+  return `${text},[${prefix}:${label}]`
+}
+
+async function commitPendingSpeech(source, value = partialText.value, emotion = '') {
   const text = String(value || '').trim()
   if (!text) return
+  const backendText = buildBackendSpeechText(text, emotion)
   if (!gatewayStore.ready) {
     try {
       await gatewayStore.refresh()
@@ -326,10 +347,10 @@ async function commitPendingSpeech(source, value = partialText.value) {
   appendTranscript('user', text)
   partialText.value = ''
   voiceState.value = 'thinking'
-  log('forward speech to backend', { source, textLength: text.length, text })
+  log('forward speech to backend', { source, textLength: backendText.length, text: backendText, emotion })
   try {
-    await chatStore.sendMessage(text, [])
-    log('backend send completed', { source, textLength: text.length })
+    await chatStore.sendMessage(backendText, [])
+    log('backend send completed', { source, textLength: backendText.length })
   } catch (err) {
     warn('backend send failed', err)
     error.value = err?.message || String(err)
@@ -442,7 +463,7 @@ async function startAsr() {
 
 function handleVoiceEvent(data) {
   if (!data) return
-  log('voice event', { event: data.event, rawEvent: data.rawEvent, sessionId: data.sessionId, text: data.text, error: data.error, audio: !!data.audioBase64 })
+  log('voice event', { event: data.event, rawEvent: data.rawEvent, sessionId: data.sessionId, text: data.text, emotion: data.emotion, error: data.error, audio: !!data.audioBase64 })
   if (data.sessionId !== asrSessionId && data.sessionId !== ttsSessionId) return
   if (data.event === 'asr:ready') {
     if (!recognitionPaused) voiceState.value = 'listening'
@@ -467,7 +488,7 @@ function handleVoiceEvent(data) {
     partialText.value = transcript
     pauseRecognition('sentence-end')
     voiceState.value = 'thinking'
-    void commitPendingSpeech('completed', transcript)
+    void commitPendingSpeech('completed', transcript, data.emotion)
     return
   }
   if (data.event === 'tts:audio' && data.audioBase64) {
