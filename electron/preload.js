@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('clawshell', {
 
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (cfg) => ipcRenderer.invoke('save-config', cfg),
+  saveModelConfig: (cfg) => ipcRenderer.invoke('save-model-config', cfg),
 
   // ── 诊断与修复 ──
 
@@ -40,7 +41,7 @@ contextBridge.exposeInMainWorld('clawshell', {
   readSkillFile: (slug, filename, target) => ipcRenderer.invoke('read-skill-file', slug, filename, target),
 
   // ── 模型供应商 API ──
-  fetchProviderModels: (baseUrl, apiKey) => ipcRenderer.invoke('fetch-provider-models', baseUrl, apiKey),
+  fetchProviderModels: (baseUrl, apiKey, apiType) => ipcRenderer.invoke('fetch-provider-models', baseUrl, apiKey, apiType),
 
   // ── 本地文件打开 ──
 

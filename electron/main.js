@@ -79,10 +79,14 @@ function resolveDataDir() {
 
 function resolvePaths() {
   const dataDir = resolveDataDir();
+  const configDir = path.join(dataDir, '.openclaw');
+  const legacyConfigDir = path.join(dataDir, '.openclaw');
   return {
     dataDir,
-    configDir: path.join(dataDir, '.openclaw'),
-    configPath: path.join(dataDir, '.openclaw', 'openclaw.json'),
+    configDir,
+    configPath: path.join(configDir, 'openclaw.json'),
+    legacyConfigDir,
+    legacyConfigPath: path.join(legacyConfigDir, 'openclaw.json'),
     settingsPath: path.join(dataDir, 'clawshell-settings.json'),
   };
 }
@@ -104,6 +108,11 @@ function getManagedToolsRoot() {
 
 function getBundledSkillsRoot() {
   return path.join(getBundledResourcesRoot(), 'skills');
+}
+
+function getGlobalSkillsDir() {
+  const { legacyConfigDir } = resolvePaths();
+  return path.join(legacyConfigDir, 'skills');
 }
 
 function getPathEnvKey(env = process.env) {
@@ -311,8 +320,7 @@ function ensureBundledSkillsInstalled() {
   const sourceDir = getBundledSkillsRoot();
   if (!fs.existsSync(sourceDir)) return;
 
-  const { configDir } = resolvePaths();
-  const targetDir = path.join(configDir, 'skills');
+  const targetDir = getGlobalSkillsDir();
   fs.mkdirSync(targetDir, { recursive: true });
 
   for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
@@ -326,6 +334,58 @@ function ensureBundledSkillsInstalled() {
     } catch (err) {
       console.warn(`[${APP_NAME}] Failed to install bundled skill ${entry.name}:`, err.message || err);
     }
+  }
+}
+
+function listInstalledSkillSlugs() {
+  const skillsDir = getGlobalSkillsDir();
+  if (!fs.existsSync(skillsDir)) return [];
+  return fs.readdirSync(skillsDir, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name)
+    .filter(slug => slug && !slug.startsWith('.'));
+}
+
+function ensureInstalledSkillsEnabled() {
+  const slugs = listInstalledSkillSlugs();
+  if (slugs.length === 0) return;
+
+  const config = getConfig();
+  const changed = enableSkillEntries(config, slugs);
+  if (changed) {
+    saveConfig(config);
+    log(`[${APP_NAME}] Enabled installed skills: ${slugs.join(', ')}`);
+  }
+
+  syncLegacySkillEntries(slugs);
+}
+
+function enableSkillEntries(config, slugs) {
+  if (!config.skills) config.skills = {};
+  if (!config.skills.entries) config.skills.entries = {};
+
+  let dirty = false;
+  for (const slug of slugs) {
+    const existing = config.skills.entries[slug] || {};
+    if (existing.enabled !== true) {
+      config.skills.entries[slug] = { ...existing, enabled: true };
+      dirty = true;
+    }
+  }
+  return dirty;
+}
+
+function syncLegacySkillEntries(slugs) {
+  const { legacyConfigPath } = resolvePaths();
+  if (!fs.existsSync(legacyConfigPath)) return;
+  try {
+    const legacyConfig = JSON.parse(fs.readFileSync(legacyConfigPath, 'utf8'));
+    if (enableSkillEntries(legacyConfig, slugs)) {
+      fs.writeFileSync(legacyConfigPath, JSON.stringify(legacyConfig, null, 2));
+      log(`[${APP_NAME}] Synced installed skills to ${legacyConfigPath}`);
+    }
+  } catch (err) {
+    console.warn(`[${APP_NAME}] Failed to sync installed skills to legacy config:`, err.message || err);
   }
 }
 
@@ -526,7 +586,7 @@ function getNpmBin() {
 // ═══════════════════════════════════════════════════════════════
 
 function ensureConfig() {
-  const { dataDir, configDir, configPath } = resolvePaths();
+  const { dataDir, configDir, configPath, legacyConfigPath } = resolvePaths();
   fs.mkdirSync(dataDir, { recursive: true });
   fs.mkdirSync(configDir, { recursive: true });
   // fs.mkdirSync(path.join(configDir, 'memory'), { recursive: true });
@@ -534,6 +594,10 @@ function ensureConfig() {
   // fs.mkdirSync(path.join(configDir, 'skills'), { recursive: true });
   // fs.mkdirSync(path.join(configDir, 'logs'), { recursive: true });
   fs.mkdirSync(path.join(dataDir, 'core'), { recursive: true });
+  if (!fs.existsSync(configPath) && fs.existsSync(legacyConfigPath)) {
+    fs.copyFileSync(legacyConfigPath, configPath);
+    console.log(`[${APP_NAME}] Migrated config from ${legacyConfigPath} to ${configPath}`);
+  }
   if (!fs.existsSync(configPath)) {
     const defaultConfig = {
       gateway: { mode: 'local', auth: { token: 'clawshell' } },
@@ -558,6 +622,103 @@ function getConfig() {
 function saveConfig(config) {
   const { configPath } = resolvePaths();
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+}
+
+const KNOWN_MODEL_METADATA = {
+  deepseek: {
+    'deepseek-v4-flash': {
+      name: 'DeepSeek V4 Flash',
+      reasoning: true,
+      contextWindow: 1000000,
+      maxTokens: 384000,
+      cost: { input: 0.14, output: 0.28, cacheRead: 0.028, cacheWrite: 0 },
+      compat: { supportsUsageInStreaming: true, supportsReasoningEffort: true, maxTokensField: 'max_tokens' },
+    },
+    'deepseek-v4-pro': {
+      name: 'DeepSeek V4 Pro',
+      reasoning: true,
+      contextWindow: 1000000,
+      maxTokens: 384000,
+      cost: { input: 1.74, output: 3.48, cacheRead: 0.145, cacheWrite: 0 },
+      compat: { supportsUsageInStreaming: true, supportsReasoningEffort: true, maxTokensField: 'max_tokens' },
+    },
+    'deepseek-reasoner': {
+      name: 'DeepSeek Reasoner',
+      reasoning: true,
+      contextWindow: 131072,
+      maxTokens: 65536,
+      cost: { input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0 },
+      compat: { supportsUsageInStreaming: true, supportsReasoningEffort: false, maxTokensField: 'max_tokens' },
+    },
+  },
+};
+
+function applyKnownModelMetadata(config) {
+  const providers = config.models?.providers;
+  if (!providers || typeof providers !== 'object') return false;
+
+  let dirty = false;
+  for (const [providerId, providerConfig] of Object.entries(providers)) {
+    const known = KNOWN_MODEL_METADATA[providerId];
+    if (!known || !Array.isArray(providerConfig?.models)) continue;
+    providerConfig.models = providerConfig.models.map(model => {
+      if (!model?.id || !known[model.id]) return model;
+      const patched = { ...model, ...known[model.id], id: model.id };
+      if (JSON.stringify(patched) !== JSON.stringify(model)) dirty = true;
+      return patched;
+    });
+  }
+  return dirty;
+}
+
+function ensureKnownModelMetadata() {
+  const config = getConfig();
+  if (applyKnownModelMetadata(config)) {
+    saveConfig(config);
+    log(`[${APP_NAME}] Applied known model metadata`);
+  }
+}
+
+function saveModelConfigToDisk({ provider, baseUrl, modelId, apiKey, providerModels, apiType }) {
+  if (!provider || !modelId) {
+    return { ok: false, error: 'Missing provider or model id' };
+  }
+  if (!Array.isArray(providerModels) || providerModels.length === 0) {
+    return { ok: false, error: 'Model list is required. Fetch provider models before saving.' };
+  }
+
+  const cfg = getConfig();
+  if (!cfg.models) cfg.models = {};
+  cfg.models.mode = 'merge';
+  if (!cfg.models.providers) cfg.models.providers = {};
+  cfg.models.providers[provider] = {
+    baseUrl: baseUrl || '',
+    apiKey: apiKey || '',
+    api: apiType || 'openai-completions',
+    models: providerModels,
+  };
+  applyKnownModelMetadata(cfg);
+
+  if (provider === 'zai') {
+    if (!cfg.env) cfg.env = {};
+    cfg.env.ZAI_API_KEY = apiKey || '';
+  }
+  if (!cfg.agents) cfg.agents = {};
+  if (!cfg.agents.defaults) cfg.agents.defaults = {};
+  if (!cfg.agents.defaults.model) cfg.agents.defaults.model = {};
+  if (!cfg.agents.defaults.model.primary) cfg.agents.defaults.model.primary = `${provider}/${modelId}`;
+
+  saveConfig(cfg);
+
+  const { configPath } = resolvePaths();
+  const saved = getConfig();
+  const verified = Array.isArray(saved.models?.providers?.[provider]?.models)
+    && saved.models.providers[provider].models.length > 0;
+  if (!verified) {
+    return { ok: false, error: `Model config was not written to ${configPath}` };
+  }
+
+  return { ok: true, configPath };
 }
 
 function getSettings() {
@@ -801,8 +962,8 @@ function startDashScopeAsr(options = {}) {
         },
         turn_detection: {
           type: 'server_vad',
-          threshold: options.vadThreshold ?? 0.0,
-          silence_duration_ms: options.silenceDurationMs || 400,
+          threshold: options.vadThreshold ?? 0.5,
+          silence_duration_ms: options.silenceDurationMs || 1800,
         },
       },
     })));
@@ -1131,6 +1292,8 @@ function startGateway(port) {
     console.log(`[${APP_NAME}] Using Node.js: ${nodeBin}`);
     console.log(`[${APP_NAME}] Using OpenClaw: ${openclawPath}`);
 
+    ensureKnownModelMetadata();
+    ensureInstalledSkillsEnabled();
     const env = getOpenClawEnv();
 
     gatewayProcess = spawn(nodeBin, [
@@ -2381,6 +2544,12 @@ function setupIPC() {
     return { ok: true };
   });
 
+  ipcMain.handle('save-model-config', (_, modelConfig) => {
+    const result = saveModelConfigToDisk(modelConfig || {});
+    if (result.ok) console.log(`[${APP_NAME}] Model config saved to ${result.configPath}`);
+    return result;
+  });
+
   ipcMain.handle('restart-gateway', () => restartGateway());
 
   ipcMain.handle('stop-gateway', () => {
@@ -2487,11 +2656,10 @@ function setupIPC() {
   });
 
   function getSkillBaseDir(target = {}) {
-    const { configDir } = resolvePaths();
     if (target?.scope === 'agent' && target.agentId) {
       return path.join(getAgentWorkspaceDir(target.agentId), 'skills');
     }
-    return path.join(configDir, 'skills');
+    return getGlobalSkillsDir();
   }
 
   function resolveSkillPath(baseDir, slug) {
@@ -2605,17 +2773,20 @@ function setupIPC() {
     });
   });
 
-  ipcMain.handle('fetch-provider-models', async (_, baseUrl, apiKey) => {
+  ipcMain.handle('fetch-provider-models', async (_, baseUrl, apiKey, apiType) => {
     try {
       const url = baseUrl.replace(/\/+$/, '') + '/models';
       return await new Promise((resolve, reject) => {
         const parsed = new URL(url);
+        const headers = apiType === 'anthropic'
+          ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+          : { 'Authorization': `Bearer ${apiKey}` };
         const options = {
           hostname: parsed.hostname,
           port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
           path: parsed.pathname + (parsed.search || ''),
           method: 'GET',
-          headers: { 'Authorization': `Bearer ${apiKey}` },
+          headers,
           timeout: 10000,
         };
         const mod = parsed.protocol === 'https:' ? https : http;
@@ -2623,6 +2794,9 @@ function setupIPC() {
           let data = '';
           res.on('data', chunk => data += chunk);
           res.on('end', () => {
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+              return resolve({ error: `HTTP ${res.statusCode}: ${data.slice(0, 300)}` });
+            }
             try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON')); }
           });
         });
@@ -3077,8 +3251,8 @@ function setupIPC() {
   }
 
   ipcMain.handle('save-agent-workspace', async (_, agentData) => {
-    const dataDir = resolveDataDir();
-    const workspaceDir = path.join(dataDir, '.openclaw', 'workspace');
+    const { configDir } = resolvePaths();
+    const workspaceDir = path.join(configDir, 'workspace');
     try {
       fs.mkdirSync(workspaceDir, { recursive: true });
 
@@ -3595,7 +3769,9 @@ app.whenReady().then(async () => {
 
   applyBundledRuntimeEnvironment();
   ensureConfig();
+  ensureKnownModelMetadata();
   ensureBundledSkillsInstalled();
+  ensureInstalledSkillsEnabled();
   applyNetworkProxyEnvironment();
   ensureDeviceAuthDisabled();
   setupIPC();

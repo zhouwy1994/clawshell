@@ -617,6 +617,7 @@ export const useChatStore = defineStore('chat', () => {
     if (normalized === thinkingLevel.value) return
     const previous = thinkingLevel.value
     thinkingLevel.value = normalized
+    error.value = null
     try {
       await gw.request('sessions.patch', {
         key: currentSessionKey.value,
@@ -624,6 +625,7 @@ export const useChatStore = defineStore('chat', () => {
       })
     } catch (e) {
       thinkingLevel.value = previous
+      error.value = e.message || String(e)
       console.error('[chat] failed to set thinking level:', e)
     }
   }

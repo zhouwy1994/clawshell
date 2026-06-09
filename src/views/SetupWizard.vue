@@ -177,6 +177,8 @@
         </div>
       </div>
 
+      <p v-if="finishError" class="core-error">{{ finishError }}</p>
+
       <div class="setup-actions">
         <button v-if="step > 0" class="btn-secondary" @click="step--">{{ t('setup.prevStep') }}</button>
         <button v-if="step < 3" class="btn-primary" @click="nextStep" :disabled="!canNext">
@@ -237,6 +239,7 @@ const apiKey = ref('')
 const customBase = ref('')
 const customModel = ref('')
 const startingGateway = ref(false)
+const finishError = ref('')
 const personaFormRef = ref(null)
 
 const coreChecking = ref(true)
@@ -336,7 +339,7 @@ const PRESETS = computed(() => [
   { id: 'minimax', name: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-Text-01', tags: [t('models.tagRecommend'), t('models.tagDomestic')], link: 'https://platform.minimaxi.com/' },
   { id: 'kimi', name: 'Kimi', baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-auto', tags: [t('models.tagDomestic'), t('models.tagFast')], link: 'https://platform.moonshot.cn/' },
   { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', tags: [t('models.tagDomestic'), t('models.tagCheap')], link: 'https://platform.deepseek.com/' },
-  { id: 'zai', name: 'GLM', baseUrl: '', model: 'glm-5', tags: [t('models.tagDomestic'), t('models.tagFree')], link: 'https://open.bigmodel.cn/', isZai: true },
+  { id: 'zai', name: 'GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5', tags: [t('models.tagDomestic'), t('models.tagFree')], link: 'https://open.bigmodel.cn/', isZai: true },
   { id: 'qwen', name: 'Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo', tags: [t('models.tagDomestic'), t('models.tagFree')], link: 'https://dashscope.console.aliyun.com/' },
   { id: 'doubao', name: 'Doubao', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-1.5-pro-32k', tags: [t('models.tagDomestic'), t('models.tagFast')], link: 'https://console.volcengine.com/ark' },
   { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', tags: [t('models.tagPowerful')], link: 'https://platform.openai.com/' },
@@ -403,6 +406,7 @@ function nextStep() {
 async function finish() {
   const p = activePreset.value
   if (!p) return
+  finishError.value = ''
 
   let baseUrl = p.baseUrl
   let modelId = p.model
@@ -413,11 +417,26 @@ async function finish() {
 
   const providerId = p.isCustom ? 'custom' : p.id
   const apiType = p.id === 'anthropic' ? 'anthropic' : 'openai-completions'
-  await configStore.saveModelConfig(providerId, baseUrl, modelId, apiKey.value.trim(), null, apiType)
+  let providerModels
+  try {
+    providerModels = await configStore.fetchProviderModelList(baseUrl, apiKey.value.trim(), apiType, providerId)
+  } catch (e) {
+    finishError.value = e.message || '获取模型列表失败'
+    return
+  }
+  if (!providerModels.some(m => m.id === modelId)) {
+    modelId = providerModels[0].id
+  }
+
+  const modelResult = await configStore.saveModelConfig(providerId, baseUrl, modelId, apiKey.value.trim(), providerModels, apiType)
+  if (!modelResult.ok) {
+    finishError.value = modelResult.error || '模型配置保存失败'
+    return
+  }
 
   // Save agent workspace files
   const persona = normalizePersona(emp, { id: 'main' })
-  await ipc.saveAgentWorkspace({
+  const workspaceResult = await ipc.saveAgentWorkspace({
     ...persona,
     files: {
       SOUL: generateSoulMd(persona),
@@ -425,11 +444,20 @@ async function finish() {
       USER: generateUserMd(persona),
     },
   })
+  if (workspaceResult?.ok === false) {
+    finishError.value = workspaceResult.error || '助手配置保存失败'
+    return
+  }
 
   // Show gateway starting overlay
   startingGateway.value = true
 
-  await ipc.setupComplete()
+  const setupResult = await ipc.setupComplete()
+  if (setupResult?.ok === false) {
+    startingGateway.value = false
+    finishError.value = setupResult.error || '初始化完成状态保存失败'
+    return
+  }
 
   // Wait for gateway to be ready (poll up to 60s)
   const start = Date.now()

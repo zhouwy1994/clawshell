@@ -4,6 +4,7 @@ export const ipc = window.clawshell || {
   stopGateway: async () => ({ ok: false }),
   getConfig: async () => ({}),
   saveConfig: async () => ({ ok: false }),
+  saveModelConfig: async () => ({ ok: false, error: 'Not available' }),
   diagnose: async () => ({ issues: [] }),
   repair: async () => ({ ok: false }),
   doctorFix: async () => ({ ok: false, stdout: '', stderr: '' }),
