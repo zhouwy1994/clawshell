@@ -86,6 +86,15 @@ contextBridge.exposeInMainWorld('clawshell', {
     ipcRenderer.on('node-install-progress', handler);
     return () => ipcRenderer.removeListener('node-install-progress', handler);
   },
+  listToolPackages: () => ipcRenderer.invoke('list-tool-packages'),
+  installToolPackage: (id) => ipcRenderer.invoke('install-tool-package', id),
+  uninstallToolPackage: (id) => ipcRenderer.invoke('uninstall-tool-package', id),
+  openToolPackageDir: (id) => ipcRenderer.invoke('open-tool-package-dir', id),
+  onToolPackageProgress: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('tool-package-progress', handler);
+    return () => ipcRenderer.removeListener('tool-package-progress', handler);
+  },
 
   onCoreInstallProgress: (callback) => {
     const handler = (_, data) => callback(data);

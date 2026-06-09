@@ -206,6 +206,35 @@ export default {
   'settings.registry.presets.huawei': 'Huawei',
   'settings.registry.custom': 'Custom',
   'settings.registry.currentActive': 'Currently active',
+  'settings.registry.httpProxy': 'HTTP Proxy',
+  'settings.registry.httpsProxy': 'HTTPS Proxy',
+  'settings.registry.proxyHint': 'After saving, ClawShell sets HTTP_PROXY / HTTPS_PROXY for app startup and child process environments.',
+  'settings.registry.githubProxy': 'GitHub Proxy',
+  'settings.registry.githubProxyHint': 'When downloading tool packages, github.com download URLs are prefixed with this proxy. You may use {url} as the original URL placeholder.',
+
+  // Tool packages
+  'settings.tools.title': 'Tool Packages',
+  'settings.tools.hint': 'Large tools are installed on demand into resources/tools. Base runtimes live in resources/runtime. ClawShell adds these tool directories to PATH on startup.',
+  'settings.tools.loading': 'Loading tool packages...',
+  'settings.tools.builtin': 'Built in',
+  'settings.tools.installed': 'Installed',
+  'settings.tools.unsupported': 'Unsupported on this OS',
+  'settings.tools.size': 'Size',
+  'settings.tools.install': 'Install',
+  'settings.tools.reinstall': 'Reinstall',
+  'settings.tools.installing': 'Installing...',
+  'settings.tools.uninstall': 'Uninstall',
+  'settings.tools.openDir': 'Open folder',
+  'settings.tools.downloading': 'Downloading',
+  'settings.tools.installSuccess': 'Tool package installed. Restart the gateway so child processes inherit the new PATH.',
+  'settings.tools.installFailed': 'Tool package install failed',
+  'settings.tools.uninstallSuccess': 'Tool package uninstalled',
+  'settings.tools.uninstallFailed': 'Tool package uninstall failed',
+  'settings.tools.manualOpened': 'Official download page or installer opened. Follow the prompts to finish installation.',
+  'settings.tools.phase.downloading': 'Downloading',
+  'settings.tools.phase.extracting': 'Extracting',
+  'settings.tools.phase.done': 'Done',
+  'settings.tools.phase.failed': 'Failed',
 
   // Data directory
   'settings.gateway.dataDir': 'Data Directory',
@@ -218,6 +247,7 @@ export default {
   'settings.tab.appearance': 'Appearance',
   'settings.tab.chat': 'Chat',
   'settings.tab.voice': 'Voice',
+  'settings.tab.tools': 'Tools',
   'settings.tab.gateway': 'Gateway',
   'settings.tab.about': 'About',
 
@@ -254,6 +284,8 @@ export default {
   'settings.voice.loading': 'Loading official voices from Alibaba Cloud docs...',
   'settings.voice.preview': 'Preview',
   'settings.voice.previewing': 'Playing',
+  'settings.voice.enable': 'Enable',
+  'settings.voice.enabled': 'Enabled',
 
   // Gateway
   'settings.gateway.status': 'Gateway Status',

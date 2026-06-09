@@ -49,6 +49,7 @@ let settingsCache = null;
 const immersiveVoiceSessions = new Map();
 let cosyVoiceListCache = null;
 let cosyVoiceListCacheAt = 0;
+let appliedProxyEnv = { http: '', https: '', all: '' };
 
 // ═══════════════════════════════════════════
 // 动态路径计算
@@ -84,6 +85,165 @@ function resolvePaths() {
     configPath: path.join(dataDir, '.openclaw', 'openclaw.json'),
     settingsPath: path.join(dataDir, 'clawshell-settings.json'),
   };
+}
+
+function getBundledRuntimeRoot() {
+  return path.join(getBundledResourcesRoot(), 'runtime');
+}
+
+function getBundledResourcesRoot() {
+  if (isDev) {
+    return path.join(__dirname, '..', 'resources');
+  }
+  return process.resourcesPath;
+}
+
+function getManagedToolsRoot() {
+  return path.join(getBundledResourcesRoot(), 'tools');
+}
+
+function getBundledSkillsRoot() {
+  return path.join(getBundledResourcesRoot(), 'skills');
+}
+
+function getPathEnvKey(env = process.env) {
+  if (process.platform !== 'win32') return 'PATH';
+  return Object.keys(env).find(key => key.toLowerCase() === 'path') || 'Path';
+}
+
+function prependPathEntries(env, entries) {
+  const pathKey = getPathEnvKey(env);
+  const current = env[pathKey] || env.PATH || '';
+  const seen = new Set();
+  for (const entry of current.split(path.delimiter)) {
+    if (!entry) continue;
+    const lookup = process.platform === 'win32' ? path.resolve(entry).toLowerCase() : path.resolve(entry);
+    seen.add(lookup);
+  }
+  const normalizedEntries = [];
+  for (const entry of entries) {
+    if (!entry || !fs.existsSync(entry)) continue;
+    const normalized = path.resolve(entry);
+    const lookup = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    if (seen.has(lookup)) continue;
+    seen.add(lookup);
+    normalizedEntries.push(normalized);
+  }
+  if (normalizedEntries.length > 0) {
+    env[pathKey] = `${normalizedEntries.join(path.delimiter)}${path.delimiter}${current}`;
+    if (pathKey !== 'PATH') env.PATH = env[pathKey];
+  }
+  return env;
+}
+
+function collectToolPathEntries(toolDir) {
+  const entries = [];
+  if (!toolDir || !fs.existsSync(toolDir)) return entries;
+  entries.push(toolDir);
+  for (const commonBinDir of ['bin', 'Scripts', path.join('node_modules', '.bin')]) {
+    const binDir = path.join(toolDir, commonBinDir);
+    if (fs.existsSync(binDir)) entries.push(binDir);
+  }
+  return entries;
+}
+
+function getManagedResourcePathEntries() {
+  const resourcesRoot = getBundledResourcesRoot();
+  if (!fs.existsSync(resourcesRoot)) return [];
+
+  const entries = [];
+  for (const item of fs.readdirSync(resourcesRoot, { withFileTypes: true })) {
+    if (!item.isDirectory()) continue;
+    const topDir = path.join(resourcesRoot, item.name);
+    entries.push(...collectToolPathEntries(topDir));
+
+    if (['runtime', 'tools'].includes(item.name)) {
+      for (const child of fs.readdirSync(topDir, { withFileTypes: true })) {
+        if (child.isDirectory()) entries.push(...collectToolPathEntries(path.join(topDir, child.name)));
+      }
+    }
+  }
+  return entries;
+}
+
+function applyBundledRuntimeEnvironment() {
+  const entries = getManagedResourcePathEntries();
+  prependPathEntries(process.env, entries);
+  const playwrightBrowsers = path.join(getManagedToolsRoot(), 'playwright', 'browsers');
+  if (fs.existsSync(playwrightBrowsers)) process.env.PLAYWRIGHT_BROWSERS_PATH = playwrightBrowsers;
+  if (entries.length > 0) {
+    log(`[${APP_NAME}] Runtime PATH entries: ${entries.join(path.delimiter)}`);
+  }
+}
+
+function normalizeOptionalUrl(value) {
+  return String(value || '').trim();
+}
+
+function applyProxySettingsToEnv(env, settings = getSettings()) {
+  const proxy = settings.registry?.proxy || {};
+  const httpProxy = normalizeOptionalUrl(proxy.http);
+  const httpsProxy = normalizeOptionalUrl(proxy.https);
+
+  const clearManaged = (keys, previous) => {
+    if (!previous) return;
+    for (const key of keys) {
+      if (env[key] === previous) delete env[key];
+    }
+  };
+
+  if (httpProxy) {
+    env.HTTP_PROXY = httpProxy;
+    env.http_proxy = httpProxy;
+    env.NPM_CONFIG_PROXY = httpProxy;
+  } else {
+    clearManaged(['HTTP_PROXY', 'http_proxy', 'NPM_CONFIG_PROXY'], appliedProxyEnv.http);
+  }
+
+  if (httpsProxy) {
+    env.HTTPS_PROXY = httpsProxy;
+    env.https_proxy = httpsProxy;
+    env.NPM_CONFIG_HTTPS_PROXY = httpsProxy;
+  } else {
+    clearManaged(['HTTPS_PROXY', 'https_proxy', 'NPM_CONFIG_HTTPS_PROXY'], appliedProxyEnv.https);
+  }
+
+  const allProxy = httpsProxy || httpProxy;
+  if (allProxy) {
+    env.ALL_PROXY = allProxy;
+    env.all_proxy = allProxy;
+  } else {
+    clearManaged(['ALL_PROXY', 'all_proxy'], appliedProxyEnv.all);
+  }
+  appliedProxyEnv = { http: httpProxy, https: httpsProxy, all: allProxy };
+  return env;
+}
+
+function applyNetworkProxyEnvironment() {
+  applyProxySettingsToEnv(process.env);
+  const proxy = getSettings().registry?.proxy || {};
+  if (proxy.http || proxy.https) {
+    log(`[${APP_NAME}] Proxy environment enabled: http=${proxy.http || '-'}, https=${proxy.https || '-'}`);
+  }
+}
+
+function applyGithubProxyUrl(rawUrl) {
+  const proxy = normalizeOptionalUrl(getSettings().registry?.githubProxy);
+  if (!proxy) return rawUrl;
+
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return rawUrl;
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (host !== 'github.com' && !host.endsWith('.github.com')) return rawUrl;
+  if (rawUrl.startsWith(proxy)) return rawUrl;
+
+  if (proxy.includes('{url}')) return proxy.replaceAll('{url}', rawUrl);
+  return `${proxy.replace(/\/+$/, '')}/${rawUrl}`;
 }
 
 function getOpenClawPath() {
@@ -133,14 +293,40 @@ function getOpenClawEnv() {
   if (settings.registry?.npm) {
     env.NPM_CONFIG_REGISTRY = settings.registry.npm;
   }
-  // 将 Node.js 所在目录注入 PATH，确保 npm/npx 等子进程能找到 node
-  // 无论是便携版还是 bundled，都取 getNodeBin() 的目录加入 PATH
+  applyProxySettingsToEnv(env, settings);
+  prependPathEntries(env, getManagedResourcePathEntries());
+  const playwrightBrowsers = path.join(getManagedToolsRoot(), 'playwright', 'browsers');
+  if (fs.existsSync(playwrightBrowsers)) env.PLAYWRIGHT_BROWSERS_PATH = playwrightBrowsers;
+
+  // 将 Node.js 所在目录注入 PATH，确保 npm/npx 等子进程能找到 node。
+  // 用户目录便携版 Node 优先于安装包内置运行时。
   const nodeBin = getNodeBin();
   if (nodeBin && nodeBin !== 'node') {
-    const nodeDir = path.dirname(nodeBin);
-    env.PATH = `${nodeDir}${path.delimiter}${env.PATH || ''}`;
+    prependPathEntries(env, [path.dirname(nodeBin)]);
   }
   return env;
+}
+
+function ensureBundledSkillsInstalled() {
+  const sourceDir = getBundledSkillsRoot();
+  if (!fs.existsSync(sourceDir)) return;
+
+  const { configDir } = resolvePaths();
+  const targetDir = path.join(configDir, 'skills');
+  fs.mkdirSync(targetDir, { recursive: true });
+
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const sourceSkillDir = path.join(sourceDir, entry.name);
+    const targetSkillDir = path.join(targetDir, entry.name);
+    if (fs.existsSync(targetSkillDir)) continue;
+    try {
+      fs.cpSync(sourceSkillDir, targetSkillDir, { recursive: true, force: false });
+      log(`[${APP_NAME}] Installed bundled skill: ${entry.name}`);
+    } catch (err) {
+      console.warn(`[${APP_NAME}] Failed to install bundled skill ${entry.name}:`, err.message || err);
+    }
+  }
 }
 
 function parseVersionTuple(version) {
@@ -269,24 +455,16 @@ function getPortableNodeDir() {
  * 获取打包在 app 中的 Node.js 运行时目录。
  *
  * 路径推导（所有平台通用）：
- *   main.js 位于: <app>/resources/app/electron/main.js
- *   __dirname  = <app>/resources/app/electron/
- *   ../..      = <app>/resources/
- *   extraResources.to=runtime → <app>/resources/runtime/node-{platform}-{arch}/
+ *   extraResources 把 resources 下的内容复制到安装包 resources 根目录
+ *   resources/runtime/nodejs → <app>/resources/runtime/nodejs
  *
- *   macOS DMG:  /Applications/ClawShell.app/Contents/Resources/runtime/node-darwin-arm64/bin/node
- *   Linux deb:  /opt/ClawShell/resources/runtime/node-linux-x64/bin/node
- *   Win NSIS:   C:\...\clawshell\resources\runtime\node-win32-x64\node.exe
- *   Portable:   %TEMP%\...\resources\runtime\node-win32-x64\node.exe
+ *   macOS DMG:  /Applications/ClawShell.app/Contents/Resources/runtime/nodejs/bin/node
+ *   Linux deb:  /opt/ClawShell/resources/runtime/nodejs/bin/node
+ *   Win NSIS:   C:\...\clawshell\resources\runtime\nodejs\node.exe
+ *   Portable:   %TEMP%\...\resources\runtime\nodejs\node.exe
  */
 function getBundledNodeDir() {
-  const platform = process.platform;
-  const arch = process.arch;
-  const suffix = `node-${platform}-${arch}`;
-  if (isDev) {
-    return path.join(__dirname, '..', 'resources', 'runtime', suffix);
-  }
-  return path.join(__dirname, '..', '..', 'runtime', suffix);
+  return path.join(getBundledRuntimeRoot(), 'nodejs');
 }
 
 function getNodeBin() {
@@ -387,7 +565,11 @@ function getSettings() {
   const defaults = {
     connection: { mode: 'local', remote: { url: '', token: '', password: '' } },
     core: { version: '', autoUpdate: false },
-    registry: { npm: 'https://registry.npmmirror.com' },
+    registry: {
+      npm: 'https://registry.npmmirror.com',
+      proxy: { http: '', https: '' },
+      githubProxy: '',
+    },
     setupDone: false,
   };
   // Temporarily set cache to defaults to break circular dependency:
@@ -531,6 +713,10 @@ function parseAsrMessage(raw) {
   };
 }
 
+function countChineseChars(text) {
+  return (String(text || '').match(/[\u3400-\u9fff]/g) || []).length;
+}
+
 function summarizeAsrRaw(raw) {
   try {
     const text = Buffer.isBuffer(raw)
@@ -647,6 +833,15 @@ function startDashScopeAsr(options = {}) {
       return;
     }
     if (parsed.event === 'conversation.item.input_audio_transcription.completed') {
+      if (countChineseChars(parsed.text || parsed.transcript) <= 2) {
+        immersiveLog('ASR transcript ignored as noise', {
+          sessionId,
+          text: parsed.text,
+          chineseChars: countChineseChars(parsed.text || parsed.transcript),
+        });
+        emitImmersiveVoice(sessionId, 'asr:noise-filtered', parsed);
+        return;
+      }
       emitImmersiveVoice(sessionId, 'asr:sentence-end', parsed);
       return;
     }
@@ -768,7 +963,7 @@ function stopImmersiveVoiceSession(sessionId, finish = true) {
 function fetchText(url) {
   return new Promise((resolve, reject) => {
     const client = url.startsWith('https:') ? https : http;
-    const req = client.get(url, (res) => {
+    const req = client.get(url, { headers: { 'User-Agent': `${APP_NAME}/${app.getVersion?.() || 'dev'}` } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         req.destroy();
         return fetchText(new URL(res.headers.location, url).toString()).then(resolve, reject);
@@ -1344,9 +1539,11 @@ function fetchFromSkillApi(apiPath) {
 }
 
 function downloadToFile(url, destPath) {
+  const downloadUrl = applyGithubProxyUrl(url);
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath);
-    https.get(url, (res) => {
+    const client = downloadUrl.startsWith('http:') ? http : https;
+    client.get(downloadUrl, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         file.close();
         fs.unlinkSync(destPath);
@@ -1434,27 +1631,27 @@ async function checkNodeEnvironment() {
     }
   }
 
-  // 3. 检查系统 PATH
-  const sysVersion = await queryNodeVersion('node');
-  log(`[${APP_NAME}] [3] system node → version=${sysVersion}`);
-  if (sysVersion) {
-    const major = parseInt(sysVersion.split('.')[0], 10);
-    return { found: true, path: 'node', version: sysVersion, meetsMinimum: major >= NODE_MINIMUM_VERSION, source: 'system' };
-  }
-
-  // 4. 检查打包在 app 中的运行时（resources/runtime/node-{platform}-{arch}/）
+  // 3. 检查打包在 app 中的运行时（resources/runtime/nodejs/）
   const bundledDir = getBundledNodeDir();
   const bundledPath = process.platform === 'win32'
     ? path.join(bundledDir, 'node.exe')
     : path.join(bundledDir, 'bin', 'node');
-  log(`[${APP_NAME}] [4] bundled: ${bundledPath} → ${fs.existsSync(bundledPath)}`);
+  log(`[${APP_NAME}] [3] bundled: ${bundledPath} → ${fs.existsSync(bundledPath)}`);
   if (fs.existsSync(bundledPath)) {
     const version = await queryNodeVersion(bundledPath);
     if (version) {
       const major = parseInt(version.split('.')[0], 10);
-      log(`[${APP_NAME}] [4] found v${version}, meetsMinimum=${major >= NODE_MINIMUM_VERSION}`);
+      log(`[${APP_NAME}] [3] found v${version}, meetsMinimum=${major >= NODE_MINIMUM_VERSION}`);
       return { found: true, path: bundledPath, version, meetsMinimum: major >= NODE_MINIMUM_VERSION, source: 'bundled' };
     }
+  }
+
+  // 4. 检查系统 PATH
+  const sysVersion = await queryNodeVersion('node');
+  log(`[${APP_NAME}] [4] system node → version=${sysVersion}`);
+  if (sysVersion) {
+    const major = parseInt(sysVersion.split('.')[0], 10);
+    return { found: true, path: 'node', version: sysVersion, meetsMinimum: major >= NODE_MINIMUM_VERSION, source: 'system' };
   }
 
   log(`[${APP_NAME}] No Node.js found in any location`);
@@ -1619,6 +1816,485 @@ async function installPortableNode() {
   console.log(`[${APP_NAME}] Portable Node.js v${versionCheck} installed at ${nodeBin}`);
 
   return { ok: true, path: nodeBin, version: versionCheck };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 9c. 可选工具包管理
+// ═══════════════════════════════════════════════════════════════
+
+const TOOL_PACKAGES = [
+  {
+    id: 'nodejs',
+    name: 'Node.js',
+    icon: 'nodejs',
+    builtin: true,
+    required: true,
+    size: '80-130 MB',
+    homepage: 'https://nodejs.org/',
+    description: 'JavaScript 运行时，OpenClaw 本地模式和 npm 工具链的基础环境。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'nodejs',
+  },
+  {
+    id: 'python',
+    name: 'Python',
+    icon: 'python',
+    builtin: true,
+    required: true,
+    size: '50-120 MB',
+    homepage: 'https://www.python.org/',
+    description: 'Python 运行环境，用于脚本、文档处理、数据处理和部分 AI 工具。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'python',
+  },
+  {
+    id: 'portablegit',
+    name: 'PortableGit',
+    icon: 'portablegit',
+    size: '55-80 MB',
+    homepage: 'https://git-scm.com/download/win',
+    description: 'Git、ssh、bash 等常用开发命令。Git for Windows 仅支持 Windows。',
+    platforms: ['win32'],
+    install: 'manual-github-asset',
+    github: { owner: 'git-for-windows', repo: 'git', include: ['PortableGit-', '64-bit.7z.exe'] },
+    manual: true,
+  },
+  {
+    id: 'pandoc',
+    name: 'Pandoc',
+    icon: 'pandoc',
+    size: '35-180 MB',
+    homepage: 'https://pandoc.org/installing.html',
+    description: '通用文档转换工具，适合 Markdown、HTML、docx、LaTeX 等格式互转。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'github-asset',
+    github: { owner: 'jgm', repo: 'pandoc' },
+  },
+  {
+    id: 'ffmpeg',
+    name: 'FFmpeg',
+    icon: 'ffmpeg',
+    size: '80-180 MB',
+    homepage: 'https://ffmpeg.org/download.html',
+    description: '音视频转码、剪辑、抽帧、合并和媒体信息处理工具。',
+    platforms: ['win32', 'linux'],
+    install: 'github-asset',
+    github: { owner: 'BtbN', repo: 'FFmpeg-Builds' },
+  },
+  {
+    id: 'playwright',
+    name: 'Playwright',
+    icon: 'playwright',
+    size: '250-700 MB',
+    homepage: 'https://playwright.dev/',
+    description: '浏览器自动化工具，安装后提供 playwright CLI 和浏览器缓存。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'npm-playwright',
+  },
+  {
+    id: 'chrome',
+    name: 'Google Chrome',
+    icon: 'chrome',
+    size: '150-300 MB',
+    homepage: 'https://googlechromelabs.github.io/chrome-for-testing/',
+    description: 'Chrome for Testing 便携构建，适合浏览器自动化和网页调试。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'chrome-for-testing',
+  },
+  {
+    id: 'imagemagick',
+    name: 'ImageMagick',
+    icon: 'imagemagick',
+    size: '35-80 MB',
+    homepage: 'https://imagemagick.org/script/download.php',
+    description: '图片格式转换、缩放、裁剪、合成和批处理工具。',
+    platforms: ['win32'],
+    install: 'imagemagick-portable',
+  },
+  {
+    id: 'winget',
+    name: 'winget',
+    icon: 'winget',
+    size: '25-60 MB',
+    homepage: 'https://github.com/microsoft/winget-cli',
+    description: 'Windows 官方包管理器。通常随系统提供，缺失时打开 Microsoft 安装包。',
+    platforms: ['win32'],
+    install: 'manual-github-asset',
+    github: { owner: 'microsoft', repo: 'winget-cli', include: ['.msixbundle'] },
+    manual: true,
+  },
+  {
+    id: 'ripgrep',
+    name: 'ripgrep',
+    icon: 'ripgrep',
+    size: '5-15 MB',
+    homepage: 'https://github.com/BurntSushi/ripgrep',
+    description: '高速全文搜索工具，比 grep 更适合大型工作区检索。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'github-asset',
+    github: { owner: 'BurntSushi', repo: 'ripgrep' },
+  },
+  {
+    id: 'jq',
+    name: 'jq',
+    icon: 'jq',
+    size: '2-8 MB',
+    homepage: 'https://jqlang.github.io/jq/',
+    description: 'JSON 查询、格式化和转换命令行工具。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'github-asset',
+    github: { owner: 'jqlang', repo: 'jq' },
+  },
+  {
+    id: 'uv',
+    name: 'uv',
+    icon: 'uv',
+    size: '15-35 MB',
+    homepage: 'https://github.com/astral-sh/uv',
+    description: '高速 Python 包管理和脚本运行工具，适合安装 Python CLI 依赖。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'github-asset',
+    github: { owner: 'astral-sh', repo: 'uv' },
+  },
+];
+
+function getToolPackage(id) {
+  return TOOL_PACKAGES.find(tool => tool.id === id) || null;
+}
+
+function getToolInstallDir(tool) {
+  if (tool.id === 'nodejs') return path.join(getBundledRuntimeRoot(), 'nodejs');
+  if (tool.id === 'python') return path.join(getBundledRuntimeRoot(), 'python');
+  return path.join(getManagedToolsRoot(), tool.id);
+}
+
+function getToolInstalledMeta(tool) {
+  const installDir = getToolInstallDir(tool);
+  const exists = fs.existsSync(installDir);
+  let sizeBytes = 0;
+  if (exists) {
+    const stack = [installDir];
+    while (stack.length) {
+      const current = stack.pop();
+      try {
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+          const full = path.join(current, entry.name);
+          if (entry.isDirectory()) stack.push(full);
+          else if (entry.isFile()) sizeBytes += fs.statSync(full).size;
+        }
+      } catch {}
+    }
+  }
+  return { installed: exists, installDir, sizeBytes };
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  return `${value.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+function normalizeToolForRenderer(tool) {
+  const meta = getToolInstalledMeta(tool);
+  const supported = tool.platforms.includes(process.platform);
+  return {
+    id: tool.id,
+    name: tool.name,
+    icon: tool.icon,
+    builtin: !!tool.builtin,
+    required: !!tool.required,
+    manual: !!tool.manual,
+    supported,
+    installed: meta.installed,
+    path: meta.installed ? meta.installDir : '',
+    installedSize: formatBytes(meta.sizeBytes),
+    size: tool.size,
+    homepage: tool.homepage,
+    description: tool.description,
+  };
+}
+
+function sendToolProgress(id, percent, phase) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('tool-package-progress', { id, percent, phase });
+  }
+}
+
+function mapArchForDownloads() {
+  if (process.arch === 'arm64') return 'arm64';
+  if (process.arch === 'ia32') return 'x86';
+  return 'x64';
+}
+
+async function fetchJson(url) {
+  const text = await fetchText(url);
+  return JSON.parse(text);
+}
+
+async function getLatestGithubAsset(owner, repo, predicate) {
+  const release = await fetchJson(`https://api.github.com/repos/${owner}/${repo}/releases/latest`);
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  const asset = assets.find(predicate);
+  if (!asset?.browser_download_url) {
+    throw new Error(`No matching asset found for ${owner}/${repo}`);
+  }
+  return { name: asset.name, url: asset.browser_download_url, size: asset.size || 0 };
+}
+
+function githubAssetPredicate(tool) {
+  const arch = mapArchForDownloads();
+  const platform = process.platform;
+  return (asset) => {
+    const name = String(asset.name || '');
+    const lower = name.toLowerCase();
+    if (tool.github?.include?.some(part => !name.includes(part))) return false;
+    if (tool.id === 'pandoc') {
+      if (platform === 'win32') return lower.endsWith('.zip') && lower.includes('windows') && lower.includes('x86_64');
+      if (platform === 'darwin') return lower.endsWith('.zip') && lower.includes('macos') && (arch === 'arm64' ? lower.includes('arm64') : lower.includes('x86_64'));
+      return lower.endsWith('.tar.gz') && lower.includes('linux') && lower.includes('amd64');
+    }
+    if (tool.id === 'ffmpeg') {
+      if (platform === 'win32') return lower.endsWith('.zip') && lower.includes('win64') && lower.includes('gpl') && !lower.includes('shared');
+      if (platform === 'linux') return lower.endsWith('.tar.xz') && lower.includes('linux64') && lower.includes('gpl') && !lower.includes('shared');
+      return false;
+    }
+    if (tool.id === 'ripgrep') {
+      if (platform === 'win32') return lower.endsWith('.zip') && lower.includes('x86_64-pc-windows-msvc');
+      if (platform === 'darwin') return lower.endsWith('.tar.gz') && lower.includes('apple-darwin');
+      return lower.endsWith('.tar.gz') && lower.includes('x86_64-unknown-linux-musl');
+    }
+    if (tool.id === 'jq') {
+      if (platform === 'win32') return lower.endsWith('.exe') && lower.includes('windows-amd64');
+      if (platform === 'darwin') return lower.includes('macos') && (arch === 'arm64' ? lower.includes('arm64') : lower.includes('amd64'));
+      return lower.includes('linux-amd64') && !lower.endsWith('.asc');
+    }
+    if (tool.id === 'uv') {
+      if (platform === 'win32') return lower.endsWith('.zip') && lower.includes('x86_64-pc-windows-msvc');
+      if (platform === 'darwin') return lower.endsWith('.tar.gz') && lower.includes(arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin');
+      return lower.endsWith('.tar.gz') && lower.includes('x86_64-unknown-linux-gnu');
+    }
+    return true;
+  };
+}
+
+async function extractArchive(archivePath, destDir) {
+  const lower = archivePath.toLowerCase();
+  fs.rmSync(destDir, { recursive: true, force: true });
+  fs.mkdirSync(destDir, { recursive: true });
+  const tmpDir = path.join(os.tmpdir(), `clawshell-tool-extract-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  try {
+    if (lower.endsWith('.zip')) {
+      const zip = new AdmZip(archivePath);
+      zip.extractAllTo(tmpDir, true);
+    } else if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz') || lower.endsWith('.tar.xz')) {
+      await new Promise((resolve, reject) => {
+        const tar = spawn('tar', ['-xf', archivePath, '-C', tmpDir], { stdio: 'pipe' });
+        tar.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`tar exited with code ${code}`)));
+        tar.on('error', reject);
+      });
+    } else if (lower.endsWith('.7z')) {
+      await new Promise((resolve, reject) => {
+        const tar = spawn('tar', ['-xf', archivePath, '-C', tmpDir], { stdio: 'pipe' });
+        tar.on('exit', (code) => code === 0 ? resolve() : reject(new Error('系统 tar 不支持解压 .7z，请安装 7-Zip 后重试')));
+        tar.on('error', reject);
+      });
+    } else {
+      throw new Error(`Unsupported archive: ${path.basename(archivePath)}`);
+    }
+    const entries = fs.readdirSync(tmpDir);
+    if (entries.length === 1 && fs.statSync(path.join(tmpDir, entries[0])).isDirectory()) {
+      moveDirContents(path.join(tmpDir, entries[0]), destDir);
+    } else {
+      moveDirContents(tmpDir, destDir);
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function installGithubAssetTool(tool) {
+  const asset = await getLatestGithubAsset(tool.github.owner, tool.github.repo, githubAssetPredicate(tool));
+  const destDir = getToolInstallDir(tool);
+  const tmpDir = path.join(os.tmpdir(), `clawshell-tool-${tool.id}-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const archivePath = path.join(tmpDir, asset.name);
+  try {
+    sendToolProgress(tool.id, 10, 'downloading');
+    await downloadToFile(asset.url, archivePath);
+    if (tool.manual || !/\.(zip|tar\.gz|tgz|tar\.xz)$/i.test(asset.name)) {
+      if (!tool.manual) {
+        fs.rmSync(destDir, { recursive: true, force: true });
+        fs.mkdirSync(destDir, { recursive: true });
+        const ext = process.platform === 'win32' ? '.exe' : '';
+        const binaryName = tool.id === 'jq' ? `jq${ext}` : path.basename(asset.name);
+        const targetPath = path.join(destDir, binaryName);
+        fs.copyFileSync(archivePath, targetPath);
+        if (process.platform !== 'win32') fs.chmodSync(targetPath, 0o755);
+        sendToolProgress(tool.id, 100, 'done');
+        return { ok: true, path: destDir };
+      }
+      await shell.openPath(archivePath);
+      return { ok: true, manual: true, path: archivePath, message: '已下载安装包，请按安装器提示完成安装' };
+    }
+    sendToolProgress(tool.id, 65, 'extracting');
+    await extractArchive(archivePath, destDir);
+    sendToolProgress(tool.id, 100, 'done');
+    return { ok: true, path: destDir };
+  } finally {
+    if (!tool.manual) fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function resolveNodeRuntimeDownload() {
+  const version = await getLatestNodeLTSVersion();
+  const arch = mapArchForDownloads();
+  const osName = process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'darwin' : 'linux';
+  const archiveName = `node-v${version}-${osName}-${arch}`;
+  const ext = process.platform === 'win32' ? '.zip' : '.tar.gz';
+  return {
+    name: `${archiveName}${ext}`,
+    url: `https://nodejs.org/dist/v${version}/${archiveName}${ext}`,
+  };
+}
+
+async function resolvePythonStandaloneDownload() {
+  const platformTarget = process.platform === 'win32'
+    ? 'x86_64-pc-windows-msvc'
+    : process.platform === 'darwin'
+      ? (process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin')
+      : 'x86_64-unknown-linux-gnu';
+  const release = await fetchJson('https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest');
+  const candidates = (release.assets || [])
+    .map(asset => ({ name: asset.name || '', url: asset.browser_download_url || '' }))
+    .filter(asset => {
+      const match = asset.name.match(/^cpython-(\d+)\.(\d+)\.(\d+)([A-Za-z].*)?\+/);
+      return match
+        && asset.name.includes(platformTarget)
+        && asset.name.includes('install_only')
+        && asset.name.includes('stripped')
+        && !asset.name.includes('freethreaded')
+        && !asset.name.includes('debug')
+        && asset.name.endsWith('.tar.gz')
+        && !match[4];
+    })
+    .sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }));
+  if (!candidates[0]) throw new Error(`No Python runtime found for ${platformTarget}`);
+  return candidates[0];
+}
+
+async function installRuntimeArchiveTool(tool, resolver) {
+  const asset = await resolver();
+  const destDir = getToolInstallDir(tool);
+  const tmpDir = path.join(os.tmpdir(), `clawshell-tool-${tool.id}-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const archivePath = path.join(tmpDir, asset.name);
+  try {
+    sendToolProgress(tool.id, 10, 'downloading');
+    await downloadToFile(asset.url, archivePath);
+    sendToolProgress(tool.id, 65, 'extracting');
+    await extractArchive(archivePath, destDir);
+    sendToolProgress(tool.id, 100, 'done');
+    return { ok: true, path: destDir };
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function installChromeForTesting(tool) {
+  const json = await fetchJson('https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json');
+  const platform = process.platform === 'win32'
+    ? 'win64'
+    : process.platform === 'darwin'
+      ? (process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64')
+      : 'linux64';
+  const item = json.channels?.Stable?.downloads?.chrome?.find(download => download.platform === platform);
+  if (!item?.url) throw new Error(`No Chrome for Testing download found for ${platform}`);
+  const name = path.basename(new URL(item.url).pathname);
+  return installRuntimeArchiveTool(tool, async () => ({ name, url: item.url }));
+}
+
+async function resolveImageMagickPortableDownload() {
+  const asset = await getLatestGithubAsset('ImageMagick', 'ImageMagick', (releaseAsset) => {
+    const name = String(releaseAsset.name || '');
+    return /^ImageMagick-[0-9].*portable-Q16-x64\.7z$/i.test(name)
+      && !name.includes('HDRI');
+  });
+  return { name: asset.name, url: asset.url };
+}
+
+async function installPlaywrightTool(tool) {
+  const destDir = getToolInstallDir(tool);
+  fs.rmSync(destDir, { recursive: true, force: true });
+  fs.mkdirSync(destDir, { recursive: true });
+  fs.writeFileSync(path.join(destDir, 'package.json'), JSON.stringify({
+    name: 'clawshell-playwright-tool',
+    version: '1.0.0',
+    private: true,
+    dependencies: { playwright: 'latest' },
+  }, null, 2), 'utf8');
+
+  const npmBin = getNpmBin();
+  const env = getOpenClawEnv();
+  env.PLAYWRIGHT_BROWSERS_PATH = path.join(destDir, 'browsers');
+  sendToolProgress(tool.id, 15, 'downloading');
+  return new Promise((resolve) => {
+    const proc = spawn(npmBin, ['install'], { cwd: destDir, env, stdio: ['ignore', 'pipe', 'pipe'], shell: true });
+    let stderr = '';
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('error', err => resolve({ ok: false, error: err.message }));
+    proc.on('exit', (code) => {
+      if (code === 0) {
+        sendToolProgress(tool.id, 100, 'done');
+        resolve({ ok: true, path: destDir });
+      } else {
+        resolve({ ok: false, error: stderr.trim().slice(-500) || `npm install exited with code ${code}` });
+      }
+    });
+  });
+}
+
+async function installManualUrlTool(tool) {
+  await shell.openExternal(tool.manualUrl || tool.homepage);
+  return { ok: true, manual: true, message: '已打开官方下载页面，请按页面提示安装' };
+}
+
+async function installToolPackage(id) {
+  const tool = getToolPackage(id);
+  if (!tool) return { ok: false, error: '未知工具包' };
+  if (!tool.platforms.includes(process.platform)) return { ok: false, error: '当前系统不支持该工具包' };
+  try {
+    if (tool.install === 'nodejs') return installRuntimeArchiveTool(tool, resolveNodeRuntimeDownload);
+    if (tool.install === 'python') return installRuntimeArchiveTool(tool, resolvePythonStandaloneDownload);
+    if (tool.install === 'github-asset' || tool.install === 'manual-github-asset') return installGithubAssetTool(tool);
+    if (tool.install === 'chrome-for-testing') return installChromeForTesting(tool);
+    if (tool.install === 'imagemagick-portable') return installRuntimeArchiveTool(tool, resolveImageMagickPortableDownload);
+    if (tool.install === 'npm-playwright') return installPlaywrightTool(tool);
+    if (tool.install === 'manual-url') return installManualUrlTool(tool);
+    return { ok: false, error: '该工具包尚未配置安装方式' };
+  } catch (err) {
+    sendToolProgress(tool.id, 0, 'failed');
+    return { ok: false, error: err.message || String(err) };
+  }
+}
+
+function uninstallToolPackage(id) {
+  const tool = getToolPackage(id);
+  if (!tool) return { ok: false, error: '未知工具包' };
+  if (tool.required || tool.builtin) return { ok: false, error: '基础运行时不可卸载' };
+  const installDir = getToolInstallDir(tool);
+  try {
+    fs.rmSync(installDir, { recursive: true, force: true });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2196,6 +2872,7 @@ function setupIPC() {
   });
   ipcMain.handle('save-settings', (_, settings) => {
     saveSettings(settings);
+    applyNetworkProxyEnvironment();
     return { ok: true };
   });
   ipcMain.handle('save-connection', (_, connection) => {
@@ -2619,6 +3296,27 @@ function setupIPC() {
     return installPortableNode();
   });
 
+  ipcMain.handle('list-tool-packages', () => {
+    return TOOL_PACKAGES.map(normalizeToolForRenderer);
+  });
+
+  ipcMain.handle('install-tool-package', async (_, id) => {
+    return installToolPackage(id);
+  });
+
+  ipcMain.handle('uninstall-tool-package', (_, id) => {
+    return uninstallToolPackage(id);
+  });
+
+  ipcMain.handle('open-tool-package-dir', async (_, id) => {
+    const tool = getToolPackage(id);
+    if (!tool) return { ok: false, error: '未知工具包' };
+    const dir = getToolInstallDir(tool);
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    await shell.openPath(fs.existsSync(dir) ? dir : path.dirname(dir));
+    return { ok: true };
+  });
+
   ipcMain.handle('list-openclaw-versions', () => {
     return listInstalledCoreVersions();
   });
@@ -2895,7 +3593,10 @@ function createWindow() {
 app.whenReady().then(async () => {
   console.log(`[${APP_NAME}] v${app.getVersion()} starting...`);
 
+  applyBundledRuntimeEnvironment();
   ensureConfig();
+  ensureBundledSkillsInstalled();
+  applyNetworkProxyEnvironment();
   ensureDeviceAuthDisabled();
   setupIPC();
   createWindow();

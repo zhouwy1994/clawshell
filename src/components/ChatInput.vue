@@ -233,6 +233,11 @@ async function transcribeVoiceBlob(blob) {
           resolve(String(data.text || data.transcript || '').trim())
           return
         }
+        if (data.event === 'asr:noise-filtered') {
+          sentenceDone = true
+          resolve('')
+          return
+        }
         if (data.event === 'asr:error' || data.event === 'asr:closed') {
           const message = data.error || (data.event === 'asr:closed' ? '语音识别连接已关闭' : '语音识别失败')
           readyReject(new Error(message))

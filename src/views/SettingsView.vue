@@ -178,6 +178,14 @@
                 <span class="voice-card-actions">
                   <button
                     type="button"
+                    class="voice-use-btn"
+                    :disabled="voiceId === voice.id"
+                    @click.stop="useVoice(voice)"
+                  >
+                    {{ voiceId === voice.id ? t('settings.voice.enabled') : t('settings.voice.enable') }}
+                  </button>
+                  <button
+                    type="button"
                     class="voice-preview-btn"
                     :disabled="!voice.sampleUrl || previewingVoiceId === voice.id"
                     @click.stop="playVoiceSample(voice)"
@@ -224,8 +232,85 @@
             <p class="registry-active-hint">{{ t('settings.registry.currentActive') }}: {{ npmRegistry }}</p>
             <p class="registry-hint-sub">{{ t('settings.registry.npmHint') }}</p>
           </div>
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.registry.httpProxy') }}</label>
+            <input v-model="httpProxy" type="text" placeholder="http://127.0.0.1:7890" class="section-input" />
+          </div>
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.registry.httpsProxy') }}</label>
+            <input v-model="httpsProxy" type="text" placeholder="http://127.0.0.1:7890" class="section-input" />
+            <p class="registry-hint-sub">{{ t('settings.registry.proxyHint') }}</p>
+          </div>
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.registry.githubProxy') }}</label>
+            <input v-model="githubProxy" type="text" placeholder="https://gh-proxy.example.com/" class="section-input" />
+            <p class="registry-hint-sub">{{ t('settings.registry.githubProxyHint') }}</p>
+          </div>
           <button class="btn btn-primary section-btn" @click="saveRegistry">{{ t('common.save') }}</button>
           <div v-if="toast.show && toast.key === 'registry'" class="toast toast-success">{{ toast.msg }}</div>
+        </div>
+
+        <!-- Tool Packages -->
+        <div v-if="activeTab === 'tools'" class="settings-section tools-section">
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.tools.title') }}</label>
+            <p class="tools-hint">{{ t('settings.tools.hint') }}</p>
+          </div>
+          <div v-if="toolsLoading" class="tools-loading">{{ t('settings.tools.loading') }}</div>
+          <div v-else class="tool-card-grid">
+            <div
+              v-for="tool in toolPackages"
+              :key="tool.id"
+              class="tool-card"
+              :class="{ installed: tool.installed, unsupported: !tool.supported }"
+            >
+              <div class="tool-logo" v-html="getToolIconSvg(tool.icon || tool.id)"></div>
+              <div class="tool-main">
+                <div class="tool-title-row">
+                  <span class="tool-name">{{ tool.name }}</span>
+                  <span v-if="tool.builtin" class="tool-tag">{{ t('settings.tools.builtin') }}</span>
+                  <span v-if="!tool.supported" class="tool-tag unsupported">{{ t('settings.tools.unsupported') }}</span>
+                  <span v-else-if="tool.installed" class="tool-tag installed">{{ t('settings.tools.installed') }}</span>
+                </div>
+                <p class="tool-desc">{{ tool.description }}</p>
+                <div class="tool-meta">
+                  <span>{{ t('settings.tools.size') }}: {{ tool.installedSize || tool.size }}</span>
+                  <span v-if="tool.installed && tool.path" class="tool-path" :title="tool.path">{{ tool.path }}</span>
+                </div>
+                <div v-if="toolProgress[tool.id]" class="tool-progress">
+                  <div class="tool-progress-bar">
+                    <span :style="{ width: `${toolProgress[tool.id].percent || 0}%` }"></span>
+                  </div>
+                  <span class="tool-progress-text">{{ toolProgress[tool.id].phase }}</span>
+                </div>
+              </div>
+              <div class="tool-actions">
+                <button
+                  class="btn btn-primary tool-action-btn"
+                  :disabled="!tool.supported || installingToolId === tool.id"
+                  @click="installTool(tool)"
+                >
+                  {{ installingToolId === tool.id ? t('settings.tools.installing') : (tool.installed ? t('settings.tools.reinstall') : t('settings.tools.install')) }}
+                </button>
+                <button
+                  v-if="tool.installed"
+                  class="btn btn-secondary tool-action-btn"
+                  @click="openToolDir(tool)"
+                >
+                  {{ t('settings.tools.openDir') }}
+                </button>
+                <button
+                  v-if="tool.installed && !tool.builtin"
+                  class="btn btn-secondary tool-action-btn"
+                  :disabled="installingToolId === tool.id"
+                  @click="uninstallTool(tool)"
+                >
+                  {{ t('settings.tools.uninstall') }}
+                </button>
+              </div>
+            </div>
+          </div>
+          <div v-if="toolMessage" class="tools-message" :class="{ error: toolMessageType === 'error' }">{{ toolMessage }}</div>
         </div>
 
         <!-- Gateway -->
@@ -383,6 +468,7 @@ import { useGatewayStore } from '@/stores/gateway'
 import { t, setLocale, currentLocale } from '@/i18n'
 import { ipc } from '@/lib/ipc'
 import { getIcon } from '@/lib/icons'
+import { getToolIconSvg } from '@/lib/tool-icons'
 
 const uiStore = useUiStore()
 const configStore = useConfigStore()
@@ -478,6 +564,10 @@ const fallbackVoiceOptions = [
 ]
 const voiceOptions = ref([...fallbackVoiceOptions])
 
+function resolveTtsModel(voice) {
+  return String(voice || '').endsWith('_v3') ? 'cosyvoice-v3-flash' : 'cosyvoice-v3-flash'
+}
+
 // Gateway
 const autoStart = ref(false)
 const startupTimeout = ref(120)
@@ -492,6 +582,17 @@ const NPM_REGISTRY_PRESETS = [
 const npmRegistry = ref('https://registry.npmmirror.com')
 const customRegistry = ref('')
 const registryMode = ref('preset')
+const httpProxy = ref('')
+const httpsProxy = ref('')
+const githubProxy = ref('')
+
+// Tool packages
+const toolPackages = ref([])
+const toolsLoading = ref(false)
+const installingToolId = ref('')
+const toolProgress = reactive({})
+const toolMessage = ref('')
+const toolMessageType = ref('info')
 
 // Data directory (read-only, from CLAWSHELL_HOME env)
 const dataDirDisplay = ref('')
@@ -535,6 +636,7 @@ const tabs = [
   { key: 'chat', icon: '💬', label: 'settings.tab.chat' },
   { key: 'voice', icon: '🎙️', label: 'settings.tab.voice' },
   { key: 'registry', icon: '📦', label: 'settings.tab.registry' },
+  { key: 'tools', icon: '🧰', label: 'settings.tab.tools' },
   { key: 'gateway', icon: '⚡', label: 'settings.tab.gateway' },
   { key: 'about', icon: 'ℹ️', label: 'settings.tab.about' },
 ]
@@ -618,6 +720,9 @@ async function loadSettings() {
 
   const reg = settings.registry || {}
   npmRegistry.value = reg.npm || 'https://registry.npmmirror.com'
+  httpProxy.value = reg.proxy?.http || ''
+  httpsProxy.value = reg.proxy?.https || ''
+  githubProxy.value = reg.githubProxy || ''
   const isPreset = NPM_REGISTRY_PRESETS.some(p => p.url === npmRegistry.value)
   registryMode.value = isPreset ? 'preset' : 'custom'
   if (!isPreset) customRegistry.value = npmRegistry.value
@@ -696,11 +801,17 @@ async function saveVoice() {
       voice: voiceId.value,
       showImmersiveText: voiceShowText.value,
       asrModel: 'qwen3-asr-flash-realtime',
-      ttsModel: voiceId.value.endsWith('_v3') ? 'cosyvoice-v3.5-flash' : 'cosyvoice-v3.5-plus',
+      ttsModel: resolveTtsModel(voiceId.value),
     },
   })
   maskedVoiceApiKey.value = voiceApiKey.value ? `${voiceApiKey.value.slice(0, 6)}****${voiceApiKey.value.slice(-4)}` : ''
   showToast(t('common.saveSuccess'), 'voice')
+}
+
+async function useVoice(voice) {
+  if (!voice?.id) return
+  voiceId.value = voice.id
+  await saveVoice()
 }
 
 async function playVoiceSample(voice) {
@@ -731,10 +842,75 @@ async function playVoiceSample(voice) {
 async function saveRegistry() {
   const url = registryMode.value === 'custom' ? customRegistry.value : npmRegistry.value
   await saveSettingsPatch({
-    registry: { npm: url },
+    registry: {
+      npm: url,
+      proxy: {
+        http: httpProxy.value.trim(),
+        https: httpsProxy.value.trim(),
+      },
+      githubProxy: githubProxy.value.trim(),
+    },
   })
   npmRegistry.value = url
   showToast(t('common.saveSuccess'), 'registry')
+}
+
+async function loadToolPackages() {
+  toolsLoading.value = true
+  try {
+    toolPackages.value = await ipc.listToolPackages()
+  } catch {
+    toolPackages.value = []
+  } finally {
+    toolsLoading.value = false
+  }
+}
+
+async function installTool(tool) {
+  if (!tool?.supported || installingToolId.value) return
+  installingToolId.value = tool.id
+  toolMessage.value = ''
+  toolMessageType.value = 'info'
+  toolProgress[tool.id] = { percent: 5, phase: t('settings.tools.downloading') }
+  try {
+    const result = await ipc.installToolPackage(tool.id)
+    if (result?.ok) {
+      toolMessage.value = result.manual ? (result.message || t('settings.tools.manualOpened')) : t('settings.tools.installSuccess')
+      toolMessageType.value = 'info'
+      await loadToolPackages()
+    } else {
+      toolMessage.value = `${t('settings.tools.installFailed')}: ${result?.error || 'unknown'}`
+      toolMessageType.value = 'error'
+    }
+  } catch (err) {
+    toolMessage.value = `${t('settings.tools.installFailed')}: ${err.message || err}`
+    toolMessageType.value = 'error'
+  } finally {
+    installingToolId.value = ''
+    setTimeout(() => { delete toolProgress[tool.id] }, 1200)
+  }
+}
+
+async function uninstallTool(tool) {
+  if (!tool?.installed || tool.builtin) return
+  try {
+    const result = await ipc.uninstallToolPackage(tool.id)
+    if (result?.ok) {
+      toolMessage.value = t('settings.tools.uninstallSuccess')
+      toolMessageType.value = 'info'
+      await loadToolPackages()
+    } else {
+      toolMessage.value = `${t('settings.tools.uninstallFailed')}: ${result?.error || 'unknown'}`
+      toolMessageType.value = 'error'
+    }
+  } catch (err) {
+    toolMessage.value = `${t('settings.tools.uninstallFailed')}: ${err.message || err}`
+    toolMessageType.value = 'error'
+  }
+}
+
+async function openToolDir(tool) {
+  try { await ipc.openToolPackageDir(tool.id) } catch {}
 }
 
 async function handleRestart() {
@@ -900,6 +1076,14 @@ onMounted(async () => {
   await loadCosyVoiceVoices()
   await loadSystemInfo()
   await loadSystemFonts()
+  await loadToolPackages()
+  ipc.onToolPackageProgress?.((data) => {
+    if (!data?.id) return
+    toolProgress[data.id] = {
+      percent: data.percent || 0,
+      phase: t(`settings.tools.phase.${data.phase}`) || data.phase,
+    }
+  })
 })
 
 watch(fontSize, (val) => {
@@ -1259,7 +1443,8 @@ watch(autoStart, () => {
   width: 100%;
 }
 
-.voice-preview-btn {
+.voice-preview-btn,
+.voice-use-btn {
   padding: 4px 10px;
   border-radius: var(--radius-sm);
   background: var(--color-bg-tertiary);
@@ -1267,7 +1452,14 @@ watch(autoStart, () => {
   border: 1px solid var(--color-border);
 }
 
-.voice-preview-btn:disabled {
+.voice-use-btn {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+
+.voice-preview-btn:disabled,
+.voice-use-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -1647,6 +1839,173 @@ watch(autoStart, () => {
   font-size: 12px;
   color: var(--color-text-tertiary);
   margin-top: 4px;
+}
+
+/* Tool packages */
+.tools-section {
+  max-width: 920px;
+}
+
+.tools-hint,
+.tools-loading,
+.tools-message {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+.tools-message {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+}
+
+.tools-message.error {
+  color: var(--color-error);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.tool-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 12px;
+}
+
+.tool-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+}
+
+.tool-card.installed {
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.tool-card.unsupported {
+  opacity: 0.62;
+}
+
+.tool-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+}
+
+.tool-logo :deep(svg) {
+  width: 26px;
+  height: 26px;
+  display: block;
+}
+
+.tool-main {
+  min-width: 0;
+}
+
+.tool-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  flex-wrap: wrap;
+}
+
+.tool-name {
+  color: var(--color-text);
+  font-weight: 700;
+}
+
+.tool-tag {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.tool-tag.installed {
+  color: var(--color-success);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.tool-tag.unsupported {
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-tertiary);
+}
+
+.tool-desc {
+  margin: 6px 0 8px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+
+.tool-meta {
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+}
+
+.tool-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  min-height: 34px;
+}
+
+.tool-action-btn {
+  padding: 7px 12px !important;
+  font-size: 13px !important;
+}
+
+.tool-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.tool-progress-bar {
+  flex: 1;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--color-bg-tertiary);
+}
+
+.tool-progress-bar span {
+  display: block;
+  height: 100%;
+  background: var(--color-primary);
+  transition: width 0.2s;
+}
+
+.tool-progress-text {
+  width: 72px;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
 }
 
 </style>

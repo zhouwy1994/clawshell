@@ -322,8 +322,8 @@ function buildBackendSpeechText(text, emotion) {
   if (!emotionInfo) return text
   const isEnglish = currentLocale.value === 'en'
   const label = isEnglish ? emotionInfo.en : emotionInfo.zh
-  const prefix = isEnglish ? 'User sentiment' : '用户情绪'
-  return `${text},[${prefix}:${label}]`
+  const prefix = isEnglish ? '[tone and emotion]' : '语气情绪'
+  return isEnglish ? `[${prefix} ${label}]:${text}` : `【${prefix}${label}】:${text}`
 }
 
 async function commitPendingSpeech(source, value = partialText.value, emotion = '') {
@@ -489,6 +489,11 @@ function handleVoiceEvent(data) {
     pauseRecognition('sentence-end')
     voiceState.value = 'thinking'
     void commitPendingSpeech('completed', transcript, data.emotion)
+    return
+  }
+  if (data.event === 'asr:noise-filtered') {
+    partialText.value = ''
+    if (!recognitionPaused) voiceState.value = 'listening'
     return
   }
   if (data.event === 'tts:audio' && data.audioBase64) {
@@ -692,6 +697,11 @@ function playTtsChunks() {
   })
 }
 
+function resolveTtsModel(voice, savedModel) {
+  if (String(voice || '').endsWith('_v3')) return 'cosyvoice-v3-flash'
+  return savedModel || 'cosyvoice-v3-flash'
+}
+
 async function speakAssistant(text) {
   const clean = String(text || '').trim()
   if (!clean) return false
@@ -700,7 +710,7 @@ async function speakAssistant(text) {
   const apiKey = settings?.voice?.dashscopeApiKey || ''
   if (!apiKey) return false
   const voice = settings?.voice?.voice || 'longanhuan_v3'
-  const model = settings?.voice?.ttsModel || (voice.endsWith('_v3') ? 'cosyvoice-v3.5-flash' : 'cosyvoice-v3.5-plus')
+  const model = resolveTtsModel(voice, settings?.voice?.ttsModel)
   resetTtsStream()
   ttsChunks = []
   const res = await ipc.immersiveVoiceStartTts({

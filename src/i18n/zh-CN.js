@@ -206,6 +206,35 @@ export default {
   'settings.registry.presets.huawei': '华为源',
   'settings.registry.custom': '自定义',
   'settings.registry.currentActive': '当前生效',
+  'settings.registry.httpProxy': 'HTTP 代理地址',
+  'settings.registry.httpsProxy': 'HTTPS 代理地址',
+  'settings.registry.proxyHint': '保存后会在 ClawShell 启动和子进程环境中设置 HTTP_PROXY / HTTPS_PROXY。',
+  'settings.registry.githubProxy': 'GitHub 代理地址',
+  'settings.registry.githubProxyHint': '下载工具包时，github.com 下载地址会自动加上该代理前缀。可使用 {url} 作为原始地址占位符。',
+
+  // Tool packages
+  'settings.tools.title': '工具包',
+  'settings.tools.hint': '大型工具按需下载安装到 resources/tools，基础运行时位于 resources/runtime。启动时会把这些工具目录加入环境变量。',
+  'settings.tools.loading': '正在加载工具包...',
+  'settings.tools.builtin': '内置',
+  'settings.tools.installed': '已安装',
+  'settings.tools.unsupported': '不支持当前系统',
+  'settings.tools.size': '大小',
+  'settings.tools.install': '安装',
+  'settings.tools.reinstall': '重装',
+  'settings.tools.installing': '安装中...',
+  'settings.tools.uninstall': '卸载',
+  'settings.tools.openDir': '打开目录',
+  'settings.tools.downloading': '下载中',
+  'settings.tools.installSuccess': '工具包安装完成，重启网关后子进程会继承新的 PATH。',
+  'settings.tools.installFailed': '工具包安装失败',
+  'settings.tools.uninstallSuccess': '工具包已卸载',
+  'settings.tools.uninstallFailed': '工具包卸载失败',
+  'settings.tools.manualOpened': '已打开官方下载页面或安装包，请按提示完成安装。',
+  'settings.tools.phase.downloading': '下载中',
+  'settings.tools.phase.extracting': '解压中',
+  'settings.tools.phase.done': '完成',
+  'settings.tools.phase.failed': '失败',
 
   // Data directory
   'settings.gateway.dataDir': '数据目录',
@@ -218,6 +247,7 @@ export default {
   'settings.tab.appearance': '外观',
   'settings.tab.chat': '聊天',
   'settings.tab.voice': '语音',
+  'settings.tab.tools': '工具包',
   'settings.tab.gateway': '网关',
   'settings.tab.about': '关于',
 
@@ -254,6 +284,8 @@ export default {
   'settings.voice.loading': '正在从阿里云文档加载官方音色列表...',
   'settings.voice.preview': '试听',
   'settings.voice.previewing': '播放中',
+  'settings.voice.enable': '启用',
+  'settings.voice.enabled': '已启用',
 
   // Gateway
   'settings.gateway.status': '网关状态',

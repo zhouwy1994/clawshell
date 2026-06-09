@@ -1,0 +1,46 @@
+- generic [ref=e3]:
+  - generic [ref=e6]:
+    - button "最小化" [ref=e7] [cursor=pointer]:
+      - img [ref=e8]
+    - button "向下还原" [ref=e10] [cursor=pointer]:
+      - img [ref=e11]
+    - button "关闭" [ref=e14] [cursor=pointer]:
+      - img [ref=e15]
+  - main [ref=e20]:
+    - generic [ref=e21]:
+      - generic [ref=e22]:
+        - button "🌐 EN" [ref=e23] [cursor=pointer]
+        - button "🌙" [ref=e24] [cursor=pointer]
+      - generic [ref=e25]:
+        - img "ClawShell" [ref=e27]
+        - heading "启动配置引导" [level=1] [ref=e28]
+        - paragraph [ref=e29]: 选择如何连接 OpenClaw 网关
+        - generic [ref=e30]:
+          - generic [ref=e31]:
+            - generic [ref=e32]: "1"
+            - generic [ref=e33]: 选择连接方式
+          - generic [ref=e35]:
+            - generic [ref=e36]: "2"
+            - generic [ref=e37]: 配置模型
+          - generic [ref=e39]:
+            - generic [ref=e40]: "3"
+            - generic [ref=e41]: 1号助手
+          - generic [ref=e43]:
+            - generic [ref=e44]: "4"
+            - generic [ref=e45]: 完成
+        - generic [ref=e47]:
+          - paragraph [ref=e48]: 选择如何连接 OpenClaw 网关
+          - generic [ref=e49]:
+            - button "🖥️ 本地启动 在本机启动 OpenClaw 核心" [ref=e50] [cursor=pointer]:
+              - generic [ref=e51]: 🖥️
+              - generic [ref=e52]: 本地启动
+              - generic [ref=e53]: 在本机启动 OpenClaw 核心
+            - button "🌐 连接远端 连接远程运行的 OpenClaw 网关" [ref=e54] [cursor=pointer]:
+              - generic [ref=e55]: 🌐
+              - generic [ref=e56]: 连接远端
+              - generic [ref=e57]: 连接远程运行的 OpenClaw 网关
+          - generic [ref=e59]:
+            - paragraph [ref=e60]: 未检测到 Node.js 环境，需要下载 Node.js 运行时
+            - button "下载 Node.js 运行时" [ref=e61] [cursor=pointer]
+        - button "下一步" [disabled] [ref=e63]
+      - button "Choose File" [ref=e64]
