@@ -128,29 +128,15 @@ import { useGatewayStore } from '@/stores/gateway'
 import { t } from '@/i18n'
 import { getModelIcon } from '@/lib/icons'
 import { ipc } from '@/lib/ipc'
+import { createModelPresets, createModelTagMap } from '@/lib/model-presets'
 
 const router = useRouter()
 const configStore = useConfigStore()
 const gatewayStore = useGatewayStore()
 
-const PRESETS = computed(() => [
-  { id: 'minimax', name: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-Text-01', tags: [t('models.tagRecommend'), t('models.tagDomestic')], link: 'https://platform.minimaxi.com/' },
-  { id: 'kimi', name: 'Kimi', baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-auto', tags: [t('models.tagDomestic'), t('models.tagFast')], link: 'https://platform.moonshot.cn/' },
-  { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', tags: [t('models.tagDomestic'), t('models.tagCheap')], link: 'https://platform.deepseek.com/' },
-  { id: 'zai', name: 'GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5', tags: [t('models.tagDomestic'), t('models.tagFree')], link: 'https://open.bigmodel.cn/', isZai: true },
-  { id: 'qwen', name: 'Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo', tags: [t('models.tagDomestic'), t('models.tagFree')], link: 'https://dashscope.console.aliyun.com/' },
-  { id: 'doubao', name: 'Doubao', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-1.5-pro-32k', tags: [t('models.tagDomestic'), t('models.tagFast')], link: 'https://console.volcengine.com/ark' },
-  { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', tags: [t('models.tagPowerful')], link: 'https://platform.openai.com/' },
-  { id: 'anthropic', name: 'Claude', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-sonnet-4-20250514', tags: [t('models.tagPowerful')], link: 'https://console.anthropic.com/' },
-  { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', tags: [t('models.tagVeryFast'), t('models.tagFree')], link: 'https://console.groq.com/' },
-  { id: 'siliconflow', name: 'SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen2.5-72B-Instruct', tags: [t('models.tagDomestic'), t('models.tagCheap')], link: 'https://cloud.siliconflow.cn/' },
-  { id: 'custom', name: t('models.custom'), baseUrl: '', model: '', tags: [t('models.tagCompatible')], link: '', isCustom: true },
-])
+const PRESETS = computed(() => createModelPresets(t))
 
-const TAG_MAP = computed(() => ({
-  [t('models.tagRecommend')]: 'hot', [t('models.tagDomestic')]: 'cn', [t('models.tagFree')]: 'free',
-  [t('models.tagFast')]: 'fast', [t('models.tagVeryFast')]: 'fast', [t('models.tagCheap')]: 'cheap', [t('models.tagPowerful')]: 'hot',
-}))
+const TAG_MAP = computed(() => createModelTagMap(t))
 
 const step = ref(1)
 const selected = ref('')

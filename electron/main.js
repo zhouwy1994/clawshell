@@ -18,6 +18,7 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const net = require('net');
+const tls = require('tls');
 const os = require('os');
 const { randomUUID } = require('crypto');
 const AdmZip = require('adm-zip');
@@ -189,10 +190,26 @@ function normalizeOptionalUrl(value) {
   return String(value || '').trim();
 }
 
+function normalizeProxyUrl(value) {
+  const text = normalizeOptionalUrl(value);
+  if (!text) return '';
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `http://${text}`;
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol === 'https:' && isLikelyPlainHttpProxyHost(parsed.hostname, parsed.port)) {
+      parsed.protocol = 'http:';
+      return parsed.toString();
+    }
+  } catch {
+    return withProtocol;
+  }
+  return withProtocol;
+}
+
 function applyProxySettingsToEnv(env, settings = getSettings()) {
   const proxy = settings.registry?.proxy || {};
-  const httpProxy = normalizeOptionalUrl(proxy.http);
-  const httpsProxy = normalizeOptionalUrl(proxy.https);
+  const httpProxy = normalizeProxyUrl(proxy.http);
+  const httpsProxy = normalizeProxyUrl(proxy.https);
 
   const clearManaged = (keys, previous) => {
     if (!previous) return;
@@ -232,7 +249,7 @@ function applyNetworkProxyEnvironment() {
   applyProxySettingsToEnv(process.env);
   const proxy = getSettings().registry?.proxy || {};
   if (proxy.http || proxy.https) {
-    log(`[${APP_NAME}] Proxy environment enabled: http=${proxy.http || '-'}, https=${proxy.https || '-'}`);
+    log(`[${APP_NAME}] Proxy environment enabled: http=${normalizeProxyUrl(proxy.http) || '-'}, https=${normalizeProxyUrl(proxy.https) || '-'}`);
   }
 }
 
@@ -253,6 +270,269 @@ function applyGithubProxyUrl(rawUrl) {
 
   if (proxy.includes('{url}')) return proxy.replaceAll('{url}', rawUrl);
   return `${proxy.replace(/\/+$/, '')}/${rawUrl}`;
+}
+
+function isLoopbackHost(hostname = '') {
+  const host = hostname.toLowerCase();
+  return host === 'localhost'
+    || host === '127.0.0.1'
+    || host === '::1'
+    || host.startsWith('127.');
+}
+
+function isLikelyPlainHttpProxyHost(hostname = '', port = '') {
+  const host = hostname.toLowerCase();
+  const normalizedPort = String(port || '');
+  if (normalizedPort === '443' || normalizedPort === '8443') return false;
+  if (isLoopbackHost(host) || host === '0.0.0.0') return true;
+  if (host.startsWith('10.') || host.startsWith('192.168.')) return true;
+  const private172 = host.match(/^172\.(\d+)\./);
+  return !!private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31;
+}
+
+function getUrlPort(urlObj) {
+  if (urlObj.port) return Number(urlObj.port);
+  return urlObj.protocol === 'https:' ? 443 : 80;
+}
+
+function getRequestPath(urlObj) {
+  return `${urlObj.pathname || '/'}${urlObj.search || ''}`;
+}
+
+function hasHeader(headers, name) {
+  const lower = name.toLowerCase();
+  return Object.keys(headers || {}).some(key => key.toLowerCase() === lower);
+}
+
+function getDefaultRequestHeaders(headers = {}) {
+  const result = {};
+  if (!hasHeader(headers, 'user-agent')) {
+    result['User-Agent'] = `${APP_NAME}/${app.getVersion?.() || 'dev'}`;
+  }
+  for (const [key, value] of Object.entries(headers || {})) {
+    if (value === undefined || value === null) continue;
+    result[key] = value;
+  }
+  return result;
+}
+
+function getProxyAuthHeaders(proxyUrl) {
+  if (!proxyUrl?.username && !proxyUrl?.password) return {};
+  const username = decodeURIComponent(proxyUrl.username || '');
+  const password = decodeURIComponent(proxyUrl.password || '');
+  const token = Buffer.from(`${username}:${password}`).toString('base64');
+  return { 'Proxy-Authorization': `Basic ${token}` };
+}
+
+function formatNetworkError(err) {
+  if (!err) return 'Network request failed';
+  if (Array.isArray(err.errors) && err.errors.length > 0) {
+    const details = err.errors
+      .map(item => {
+        const target = item.address && item.port ? `${item.address}:${item.port}` : '';
+        const message = item.message || item.code || String(item);
+        return target ? `${message} (${target})` : message;
+      })
+      .join('; ');
+    return `${err.code || err.name || 'AggregateError'}: ${details}`;
+  }
+  if (err.message) return err.message;
+  if (err.code) return `${err.name || 'Network error'}: ${err.code}`;
+  return String(err);
+}
+
+function getProxyForRequest(rawUrl, settings = getSettings()) {
+  let target;
+  try {
+    target = rawUrl instanceof URL ? rawUrl : new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') return null;
+  if (isLoopbackHost(target.hostname)) return null;
+
+  const proxy = settings.registry?.proxy || {};
+  const httpProxy = normalizeProxyUrl(proxy.http);
+  const httpsProxy = normalizeProxyUrl(proxy.https);
+  const selected = target.protocol === 'https:'
+    ? (httpsProxy || httpProxy)
+    : (httpProxy || httpsProxy);
+  if (!selected) return null;
+
+  try {
+    const parsed = new URL(selected);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function formatConnectHost(hostname, port) {
+  const host = hostname.includes(':') && !hostname.startsWith('[')
+    ? `[${hostname}]`
+    : hostname;
+  return `${host}:${port}`;
+}
+
+function openRequest(client, options, timeout = 15000) {
+  return new Promise((resolve, reject) => {
+    const req = client.request(options, (res) => resolve({ req, res }));
+    req.on('error', reject);
+    req.setTimeout(timeout, () => req.destroy(new Error('Request timeout')));
+    req.end();
+  });
+}
+
+function createSingleSocketHttpsAgent(socket) {
+  const agent = new https.Agent({ keepAlive: false, maxSockets: 1 });
+  agent.createConnection = () => socket;
+  return agent;
+}
+
+function createProxyTunnel(targetUrl, proxyUrl, timeout = 15000) {
+  return new Promise((resolve, reject) => {
+    const proxyClient = proxyUrl.protocol === 'https:' ? https : http;
+    const targetHost = formatConnectHost(targetUrl.hostname, getUrlPort(targetUrl));
+    const req = proxyClient.request({
+      hostname: proxyUrl.hostname,
+      port: getUrlPort(proxyUrl),
+      method: 'CONNECT',
+      path: targetHost,
+      headers: getProxyAuthHeaders(proxyUrl),
+    });
+
+    req.on('connect', (res, socket) => {
+      if (res.statusCode !== 200) {
+        socket.destroy();
+        reject(new Error(`Proxy CONNECT failed: HTTP ${res.statusCode}`));
+        return;
+      }
+      const tlsSocket = tls.connect({ socket, servername: targetUrl.hostname });
+      const onSecure = () => {
+        tlsSocket.off('error', onError);
+        resolve(tlsSocket);
+      };
+      const onError = (err) => {
+        tlsSocket.off('secureConnect', onSecure);
+        reject(err);
+      };
+      tlsSocket.once('secureConnect', onSecure);
+      tlsSocket.once('error', onError);
+    });
+    req.on('error', reject);
+    req.setTimeout(timeout, () => req.destroy(new Error('Proxy CONNECT timeout')));
+    req.end();
+  });
+}
+
+async function openHttpResponse(rawUrl, options = {}) {
+  const urlObj = rawUrl instanceof URL ? rawUrl : new URL(rawUrl);
+  const timeout = options.timeout || 15000;
+  const method = options.method || 'GET';
+  const headers = getDefaultRequestHeaders(options.headers || {});
+  const proxyUrl = options.proxy === false ? null : getProxyForRequest(urlObj);
+
+  if (proxyUrl && urlObj.protocol === 'http:') {
+    const proxyHeaders = {
+      ...headers,
+      ...getProxyAuthHeaders(proxyUrl),
+    };
+    if (!hasHeader(proxyHeaders, 'host')) proxyHeaders.Host = urlObj.host;
+    const proxyClient = proxyUrl.protocol === 'https:' ? https : http;
+    return openRequest(proxyClient, {
+      hostname: proxyUrl.hostname,
+      port: getUrlPort(proxyUrl),
+      method,
+      path: urlObj.toString(),
+      headers: proxyHeaders,
+    }, timeout);
+  }
+
+  if (proxyUrl && urlObj.protocol === 'https:') {
+    const socket = await createProxyTunnel(urlObj, proxyUrl, timeout);
+    const agent = createSingleSocketHttpsAgent(socket);
+    try {
+      const opened = await openRequest(https, {
+        hostname: urlObj.hostname,
+        port: getUrlPort(urlObj),
+        method,
+        path: getRequestPath(urlObj),
+        headers,
+        servername: urlObj.hostname,
+        agent,
+      }, timeout);
+      opened.res.once('close', () => agent.destroy());
+      return opened;
+    } catch (err) {
+      agent.destroy();
+      socket.destroy();
+      throw err;
+    }
+  }
+
+  const client = urlObj.protocol === 'https:' ? https : http;
+  return openRequest(client, {
+    hostname: urlObj.hostname,
+    port: getUrlPort(urlObj),
+    method,
+    path: getRequestPath(urlObj),
+    headers,
+  }, timeout);
+}
+
+function readResponseBuffer(res, options = {}) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let settled = false;
+    const maxBytes = options.maxBytes || 0;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      res.destroy(err);
+      reject(err);
+    };
+    res.on('data', chunk => {
+      total += chunk.length;
+      if (maxBytes && total > maxBytes) {
+        fail(new Error(options.maxBytesError || 'Response is too large'));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    res.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks));
+    });
+    res.on('error', fail);
+  });
+}
+
+function isRedirectResponse(res) {
+  return res.statusCode >= 300 && res.statusCode < 400 && !!res.headers.location;
+}
+
+async function requestBuffer(rawUrl, options = {}, redirects = 5) {
+  const { req, res } = await openHttpResponse(rawUrl, options);
+  if (isRedirectResponse(res)) {
+    if (redirects <= 0) {
+      res.resume();
+      req.destroy();
+      throw new Error('Too many redirects');
+    }
+    const nextUrl = new URL(res.headers.location, rawUrl).toString();
+    res.resume();
+    req.destroy();
+    return requestBuffer(nextUrl, options, redirects - 1);
+  }
+  const buffer = await readResponseBuffer(res, options);
+  return {
+    statusCode: res.statusCode || 0,
+    headers: res.headers || {},
+    buffer,
+  };
 }
 
 function getOpenClawPath() {
@@ -1121,63 +1401,30 @@ function stopImmersiveVoiceSession(sessionId, finish = true) {
   return { ok: true };
 }
 
-function fetchText(url) {
-  return new Promise((resolve, reject) => {
-    const client = url.startsWith('https:') ? https : http;
-    const req = client.get(url, { headers: { 'User-Agent': `${APP_NAME}/${app.getVersion?.() || 'dev'}` } }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        req.destroy();
-        return fetchText(new URL(res.headers.location, url).toString()).then(resolve, reject);
-      }
-      let data = '';
-      res.setEncoding('utf8');
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
-        resolve(data);
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(15000, () => {
-      req.destroy();
-      reject(new Error('Request timeout'));
-    });
+async function fetchText(url, options = {}) {
+  const response = await requestBuffer(url, {
+    timeout: options.timeout || 15000,
+    headers: options.headers || {},
+    maxBytes: options.maxBytes || 0,
+    maxBytesError: options.maxBytesError,
   });
+  const text = response.buffer.toString('utf8');
+  if (response.statusCode >= 400) throw new Error(`HTTP ${response.statusCode}: ${text.slice(0, 300)}`);
+  return text;
 }
 
-function fetchBuffer(url) {
-  return new Promise((resolve, reject) => {
-    const client = url.startsWith('https:') ? https : http;
-    const req = client.get(url, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        req.destroy();
-        return fetchBuffer(new URL(res.headers.location, url).toString()).then(resolve, reject);
-      }
-      const chunks = [];
-      let total = 0;
-      res.on('data', chunk => {
-        total += chunk.length;
-        if (total > 5 * 1024 * 1024) {
-          req.destroy();
-          reject(new Error('Audio sample is too large'));
-          return;
-        }
-        chunks.push(chunk);
-      });
-      res.on('end', () => {
-        if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
-        resolve({
-          buffer: Buffer.concat(chunks),
-          contentType: res.headers['content-type'] || '',
-        });
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(15000, () => {
-      req.destroy();
-      reject(new Error('Request timeout'));
-    });
+async function fetchBuffer(url, options = {}) {
+  const response = await requestBuffer(url, {
+    timeout: options.timeout || 15000,
+    headers: options.headers || {},
+    maxBytes: options.maxBytes || 5 * 1024 * 1024,
+    maxBytesError: options.maxBytesError || 'Audio sample is too large',
   });
+  if (response.statusCode >= 400) throw new Error(`HTTP ${response.statusCode}`);
+  return {
+    buffer: response.buffer,
+    contentType: response.headers['content-type'] || '',
+  };
 }
 
 function decodeHtml(text = '') {
@@ -1564,26 +1811,17 @@ function getRemoteUrl(settings) {
   return url.replace(/\/+$/, '');
 }
 
-function probeRemoteGateway(settings) {
-  return new Promise((resolve) => {
-    const url = getRemoteUrl(settings);
-    if (!url) {
-      resolve({ ok: false, error: 'No remote URL configured' });
-      return;
-    }
-    const parsed = new URL(url);
-    const client = parsed.protocol === 'https:' ? https : http;
-    const req = client.get(url, (res) => {
-      resolve({ ok: true, statusCode: res.statusCode });
-    });
-    req.setTimeout(10000, () => {
-      req.destroy();
-      resolve({ ok: false, error: 'Connection timeout' });
-    });
-    req.on('error', (err) => {
-      resolve({ ok: false, error: err.message });
-    });
-  });
+async function probeRemoteGateway(settings) {
+  const url = getRemoteUrl(settings);
+  if (!url) return { ok: false, error: 'No remote URL configured' };
+  try {
+    const { req, res } = await openHttpResponse(url, { timeout: 10000 });
+    res.resume();
+    req.destroy();
+    return { ok: true, statusCode: res.statusCode };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
 }
 
 async function connectRemoteGateway(settings) {
@@ -1662,19 +1900,10 @@ function listInstalledCoreVersions() {
 // 9. SkillHub API 代理
 // ═══════════════════════════════════════════════════════════════
 
-function fetchFromSkillHub(apiPath) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(apiPath, 'https://api.skillhub.cn');
-    const req = https.get(url.toString(), (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON from SkillHub')); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('SkillHub request timeout')); });
-  });
+async function fetchFromSkillHub(apiPath) {
+  const url = new URL(apiPath, 'https://api.skillhub.cn');
+  const data = await fetchText(url.toString(), { timeout: 10000 });
+  try { return JSON.parse(data); } catch { throw new Error('Invalid JSON from SkillHub'); }
 }
 
 // const SKILL_API_HOST = 'http://localhost:8001';
@@ -1682,49 +1911,54 @@ const SKILL_API_HOST = 'http://124.221.154.36';
 // SKILL_API_URL = ""
 SKILL_API_URL = "/api/clawshell"
 
-function fetchFromSkillApi(apiPath) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(SKILL_API_URL + apiPath, SKILL_API_HOST);
-    const client = url.protocol === 'https:' ? https : http;
-    const req = client.get(url.toString(), (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        if (res.statusCode >= 400) {
-          return reject(new Error(`Skill API ${res.statusCode}: ${data.slice(0, 200)}`));
-        }
-        try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON from Skill API')); }
-      });
+async function fetchFromSkillApi(apiPath) {
+  const url = new URL(SKILL_API_URL + apiPath, SKILL_API_HOST);
+  const data = await fetchText(url.toString(), { timeout: 10000 });
+  try { return JSON.parse(data); } catch { throw new Error('Invalid JSON from Skill API'); }
+}
+
+async function downloadToFileResolved(downloadUrl, destPath, redirects = 5) {
+  const { req, res } = await openHttpResponse(downloadUrl, { timeout: 30000 });
+  if (isRedirectResponse(res)) {
+    if (redirects <= 0) {
+      res.resume();
+      req.destroy();
+      throw new Error('Too many redirects');
+    }
+    const nextUrl = applyGithubProxyUrl(new URL(res.headers.location, downloadUrl).toString());
+    res.resume();
+    req.destroy();
+    return downloadToFileResolved(nextUrl, destPath, redirects - 1);
+  }
+  if (res.statusCode !== 200) {
+    const body = await readResponseBuffer(res, { maxBytes: 1024, maxBytesError: 'Download error is too large' }).catch(() => Buffer.alloc(0));
+    throw new Error(`Download failed: HTTP ${res.statusCode}${body.length ? `: ${body.toString('utf8').slice(0, 200)}` : ''}`);
+  }
+
+  await new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(destPath);
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      try { file.close(); } catch {}
+      try { fs.unlinkSync(destPath); } catch {}
+      reject(err);
+    };
+    res.on('error', fail);
+    file.on('error', fail);
+    file.on('finish', () => {
+      if (settled) return;
+      settled = true;
+      file.close(resolve);
     });
-    req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('Skill API request timeout')); });
+    res.pipe(file);
   });
 }
 
 function downloadToFile(url, destPath) {
   const downloadUrl = applyGithubProxyUrl(url);
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destPath);
-    const client = downloadUrl.startsWith('http:') ? http : https;
-    client.get(downloadUrl, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        file.close();
-        fs.unlinkSync(destPath);
-        return downloadToFile(res.headers.location, destPath).then(resolve, reject);
-      }
-      if (res.statusCode !== 200) {
-        file.close();
-        fs.unlinkSync(destPath);
-        return reject(new Error(`Download failed: HTTP ${res.statusCode}`));
-      }
-      res.pipe(file);
-      file.on('finish', () => { file.close(); resolve(); });
-    }).on('error', (err) => {
-      file.close();
-      fs.unlinkSync(destPath);
-      reject(err);
-    });
-  });
+  return downloadToFileResolved(downloadUrl, destPath);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1832,22 +2066,10 @@ async function getLatestNodeLTSVersion() {
   ];
   for (const src of sources) {
     try {
-      const version = await new Promise((resolve, reject) => {
-        const client = src.startsWith('https') ? https : http;
-        const req = client.get(src, { timeout: 10000 }, (res) => {
-          let data = '';
-          res.on('data', chunk => data += chunk);
-          res.on('end', () => {
-            try {
-              const versions = JSON.parse(data);
-              const lts = versions.find(v => v.lts !== false && v.lts !== '');
-              resolve(lts ? lts.version.replace(/^v/, '') : null);
-            } catch { resolve(null); }
-          });
-        });
-        req.on('error', reject);
-        req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
-      });
+      const data = await fetchText(src, { timeout: 10000 });
+      const versions = JSON.parse(data);
+      const lts = versions.find(v => v.lts !== false && v.lts !== '');
+      const version = lts ? lts.version.replace(/^v/, '') : null;
       if (version) return version;
     } catch { /* try next source */ }
   }
@@ -2776,36 +2998,22 @@ function setupIPC() {
   ipcMain.handle('fetch-provider-models', async (_, baseUrl, apiKey, apiType) => {
     try {
       const url = baseUrl.replace(/\/+$/, '') + '/models';
-      return await new Promise((resolve, reject) => {
-        const parsed = new URL(url);
-        const headers = apiType === 'anthropic'
-          ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
-          : { 'Authorization': `Bearer ${apiKey}` };
-        const options = {
-          hostname: parsed.hostname,
-          port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
-          path: parsed.pathname + (parsed.search || ''),
-          method: 'GET',
-          headers,
-          timeout: 10000,
-        };
-        const mod = parsed.protocol === 'https:' ? https : http;
-        const req = mod.request(options, (res) => {
-          let data = '';
-          res.on('data', chunk => data += chunk);
-          res.on('end', () => {
-            if (res.statusCode < 200 || res.statusCode >= 300) {
-              return resolve({ error: `HTTP ${res.statusCode}: ${data.slice(0, 300)}` });
-            }
-            try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON')); }
-          });
-        });
-        req.on('error', reject);
-        req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
-        req.end();
+      const headers = apiType === 'anthropic'
+        ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+        : { 'Authorization': `Bearer ${apiKey}` };
+      const response = await requestBuffer(url, {
+        headers,
+        timeout: 10000,
+        maxBytes: 5 * 1024 * 1024,
+        maxBytesError: 'Model list response is too large',
       });
+      const data = response.buffer.toString('utf8');
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return { error: `HTTP ${response.statusCode}: ${data.slice(0, 300)}` };
+      }
+      try { return JSON.parse(data); } catch { throw new Error('Invalid JSON'); }
     } catch (e) {
-      return { error: e.message || String(e) };
+      return { error: formatNetworkError(e) };
     }
   });
 }
