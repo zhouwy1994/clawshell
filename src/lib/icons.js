@@ -79,12 +79,20 @@ const modelIcons = {
   anthropic: { color: '#D97757', path: '<path d="M17.304 3.541h-3.672l6.696 16.918H24zm-10.608 0L0 20.459h3.744l1.37-3.553h7.005l1.369 3.553h3.744L10.536 3.541zm-.371 10.223L8.616 7.82l2.291 5.945z"/>' },
   groq: { color: '#F55036', path: '<path d="M3 3v18h18V3zm11.72 13.37c-.41.38-.82.66-1.33.87l-.21.09c-.83.3-1.82.21-2.63-.1c-.45-.21-.82-.46-1.19-.8c.33-.41.66-.75 1.07-1.07l.27.21c.5.35 1 .47 1.61.41c.62-.12 1.12-.4 1.52-.9c.37-.61.41-1.09.41-1.8V10.4c0-.72-.15-1.18-.6-1.74c-.61-.49-1.17-.74-1.96-.7c-.66.11-1.19.42-1.59.95c-.33.53-.48 1.07-.37 1.69c.2.68.45 1.25 1.07 1.61c.52.27.98.32 1.56.33h.25c.2.02.4.02.61.03V14c-1.49.06-2.65.06-3.84-.97a4.22 4.22 0 0 1-1.23-2.8c.04-.88.35-1.6.86-2.32l.15-.23c1.43-1.51 3.7-1.61 5.31-.31l.17.14c.58.52.96 1.25 1.08 2.01c0 .16.01.33.01.49v3.6c0 1.05-.3 1.95-1.02 2.74z"/>' },
   siliconflow: { color: '#7C3AED', path: '<path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.18l7 3.5v7.64l-7 3.5-7-3.5V7.68l7-3.5z"/>' },
+  xai: { color: '#111827', path: '<path d="M4 4h4.1l3.62 5.21L15.55 4H20l-6.18 8.03L20.5 20h-4.22l-4.05-5.5L8.08 20H3.5l6.66-8.4z"/>' },
+  gemini: { color: '#4285F4', path: '<path d="M12 2l1.86 5.27L19 9.14l-5.14 1.86L12 16.14L10.14 11L5 9.14l5.14-1.87zm6.5 10l.9 2.6L22 15.5l-2.6.9l-.9 2.6l-.9-2.6l-2.6-.9l2.6-.9zM6.5 14l1.08 3.08L10.66 18l-3.08.92L6.5 22l-1.08-3.08L2.34 18l3.08-.92z"/>' },
+  mistral: { color: '#FF7000', path: '<path d="M3 4h4v4h3V4h4v4h3V4h4v16h-4v-8h-3v8h-4v-8H7v8H3z"/>' },
+  xiaomi: { color: '#FF6900', path: '<path d="M5 5h14a3 3 0 0 1 3 3v11h-4V9H6v10H2V8a3 3 0 0 1 3-3m3 6h4v8H8zm6 0h4v8h-4z"/>' },
+  openrouter: { color: '#38BDF8', path: '<path d="M3 5h10.5l-3 3H6v8h4.5l3 3H3zm11.5 1.5L22 12l-7.5 5.5v-3H9v-5h5.5z"/>' },
+  together: { color: '#06B6D4', path: '<path d="M7 5a5 5 0 0 1 4.58 3H13a5 5 0 1 1 0 8h-1.42A5 5 0 1 1 7 5m0 4a1 1 0 1 0 0 2h10a1 1 0 1 0 0-2zm0 4a1 1 0 1 0 0 2h10a1 1 0 1 0 0-2z"/>' },
+  qianfan: { color: '#2563EB', path: '<path d="M12 2c4.7 0 8.5 3.8 8.5 8.5S16.7 19 12 19H7.7L4 22v-6.1A8.45 8.45 0 0 1 3.5 10.5C3.5 5.8 7.3 2 12 2m-4 8h8V8H8zm0 4h5.5v-2H8z"/>' },
+  stepfun: { color: '#00A870', path: '<path d="M5 4h14v4h-8v3h7v4h-7v5H5z"/>' },
   custom: { color: '#8B5CF6', path: '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14h-2v-4h2v4zm0-6h-2V8h2v2zm4 6h-2v-4h2v4zm0-6h-2V8h2v2z"/>' },
 }
 
 /**
  * Generate inline SVG for a model provider icon.
- * @param {string} id - Provider ID (minimax, kimi, deepseek, zai, qwen, doubao, openai, anthropic, groq, siliconflow, custom)
+ * @param {string} id - Provider ID
  * @param {number} size - Icon size in pixels (default 20)
  * @returns {string} SVG HTML string
  */

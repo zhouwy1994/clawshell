@@ -37,7 +37,7 @@
         <div class="step-line" :class="{ done: step > 1 }"></div>
         <div class="step" :class="{ active: step === 2, done: step > 2 }">
           <span class="step-num">{{ step > 2 ? '✓' : '3' }}</span>
-          <span class="step-label">{{ t('setup.stepEmployee.title') }}</span>
+          <span class="step-label">{{ t('setup.stepAssistants.title') }}</span>
         </div>
         <div class="step-line" :class="{ done: step > 2 }"></div>
         <div class="step" :class="{ active: step === 3 }">
@@ -157,14 +157,14 @@
           </div>
         </div>
 
-        <!-- Step 2: Employee #1 -->
-        <div v-if="step === 2" class="step-content employee-step">
-          <p>{{ t('setup.stepEmployee.subtitle') }}</p>
+        <!-- Step 2: Assistants #1 -->
+        <div v-if="step === 2" class="step-content assistants-step">
+          <p>{{ t('setup.stepAssistants.subtitle') }}</p>
           <AgentPersonaForm
             ref="personaFormRef"
             v-model="emp"
             :avatar-list="AVATARS"
-            i18n-prefix="setup.employee"
+            i18n-prefix="setup.assistants"
             @request-avatar-upload="triggerAvatarUpload"
           />
         </div>
@@ -176,6 +176,8 @@
           <p v-else>{{ t('setup.step3.remoteDone') }}</p>
         </div>
       </div>
+
+      <p v-if="finishError" class="core-error">{{ finishError }}</p>
 
       <div class="setup-actions">
         <button v-if="step > 0" class="btn-secondary" @click="step--">{{ t('setup.prevStep') }}</button>
@@ -204,6 +206,9 @@ import { useUiStore } from '@/stores/ui'
 import AgentPersonaForm from '@/components/AgentPersonaForm.vue'
 import { loadAvatarDataUrls } from '@/lib/avatars'
 import { processAvatarFile } from '@/lib/avatar-upload'
+import { createPersona, normalizePersona } from '@/lib/agent-persona'
+import { generateSoulMd, generateIdentityMd, generateUserMd } from '@/lib/agent-md-generator'
+import { createModelPresets, createModelTagMap } from '@/lib/model-presets'
 
 const locale = currentLocale
 const uiStore = useUiStore()
@@ -235,6 +240,7 @@ const apiKey = ref('')
 const customBase = ref('')
 const customModel = ref('')
 const startingGateway = ref(false)
+const finishError = ref('')
 const personaFormRef = ref(null)
 
 const coreChecking = ref(true)
@@ -253,31 +259,8 @@ onMounted(async () => {
   AVATARS.value = await loadAvatarDataUrls()
 })
 
-// Employee data — all empty, placeholders serve as examples
-let emp = reactive({
-  name: '',
-  gender: '',
-  age: '',
-  id: 'main',
-  role: '',
-  duty: '',
-  dept: '',
-  callMe: '',
-  myRelation: '',
-  othersRelation: '',
-  charm: '',
-  style: '',
-  motto: '',
-  skills: '',
-  weakness: '',
-  attitude: '',
-  principle: '',
-  hobby: '',
-  dislike: '',
-  credo: '',
-  report: '',
-  avatar: '',
-})
+// Assistants data — all empty, placeholders serve as examples
+let emp = reactive(createPersona({ id: 'main' }))
 
 const avatarFileRef = ref(null)
 
@@ -353,29 +336,9 @@ const stepSubtitle = computed(() => {
   return t('setup.stepSubtitle')
 })
 
-const PRESETS = computed(() => [
-  { id: 'minimax', name: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-Text-01', tags: [t('models.tagRecommend'), t('models.tagDomestic')], link: 'https://platform.minimaxi.com/' },
-  { id: 'kimi', name: 'Kimi', baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-auto', tags: [t('models.tagDomestic'), t('models.tagFast')], link: 'https://platform.moonshot.cn/' },
-  { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', tags: [t('models.tagDomestic'), t('models.tagCheap')], link: 'https://platform.deepseek.com/' },
-  { id: 'zai', name: 'GLM', baseUrl: '', model: 'glm-5', tags: [t('models.tagDomestic'), t('models.tagFree')], link: 'https://open.bigmodel.cn/', isZai: true },
-  { id: 'qwen', name: 'Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo', tags: [t('models.tagDomestic'), t('models.tagFree')], link: 'https://dashscope.console.aliyun.com/' },
-  { id: 'doubao', name: 'Doubao', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-1.5-pro-32k', tags: [t('models.tagDomestic'), t('models.tagFast')], link: 'https://console.volcengine.com/ark' },
-  { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', tags: [t('models.tagPowerful')], link: 'https://platform.openai.com/' },
-  { id: 'anthropic', name: 'Claude', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-sonnet-4-20250514', tags: [t('models.tagPowerful')], link: 'https://console.anthropic.com/' },
-  { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', tags: [t('models.tagVeryFast'), t('models.tagFree')], link: 'https://console.groq.com/' },
-  { id: 'siliconflow', name: 'SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen2.5-72B-Instruct', tags: [t('models.tagDomestic'), t('models.tagCheap')], link: 'https://cloud.siliconflow.cn/' },
-  { id: 'custom', name: t('models.custom'), baseUrl: '', model: '', tags: [t('models.tagCompatible')], link: '', isCustom: true },
-])
+const PRESETS = computed(() => createModelPresets(t))
 
-const TAG_MAP = computed(() => ({
-  [t('models.tagRecommend')]: 'hot',
-  [t('models.tagDomestic')]: 'cn',
-  [t('models.tagFree')]: 'free',
-  [t('models.tagFast')]: 'fast',
-  [t('models.tagVeryFast')]: 'fast',
-  [t('models.tagCheap')]: 'cheap',
-  [t('models.tagPowerful')]: 'hot',
-}))
+const TAG_MAP = computed(() => createModelTagMap(t))
 
 function tagClass(tag) { return TAG_MAP.value[tag] || '' }
 
@@ -424,6 +387,7 @@ function nextStep() {
 async function finish() {
   const p = activePreset.value
   if (!p) return
+  finishError.value = ''
 
   let baseUrl = p.baseUrl
   let modelId = p.model
@@ -434,38 +398,47 @@ async function finish() {
 
   const providerId = p.isCustom ? 'custom' : p.id
   const apiType = p.id === 'anthropic' ? 'anthropic' : 'openai-completions'
-  await configStore.saveModelConfig(providerId, baseUrl, modelId, apiKey.value.trim(), null, apiType)
+  let providerModels
+  try {
+    providerModels = await configStore.fetchProviderModelList(baseUrl, apiKey.value.trim(), apiType, providerId)
+  } catch (e) {
+    finishError.value = e.message || '获取模型列表失败'
+    return
+  }
+  if (!providerModels.some(m => m.id === modelId)) {
+    modelId = providerModels[0].id
+  }
+
+  const modelResult = await configStore.saveModelConfig(providerId, baseUrl, modelId, apiKey.value.trim(), providerModels, apiType)
+  if (!modelResult.ok) {
+    finishError.value = modelResult.error || '模型配置保存失败'
+    return
+  }
 
   // Save agent workspace files
-  await ipc.saveAgentWorkspace({
-    name: emp.name,
-    gender: emp.gender,
-    age: emp.age,
-    id: emp.id,
-    role: emp.role,
-    duty: emp.duty,
-    dept: emp.dept,
-    callMe: emp.callMe,
-    myRelation: emp.myRelation,
-    othersRelation: emp.othersRelation,
-    charm: emp.charm,
-    style: emp.style,
-    motto: emp.motto,
-    skills: emp.skills,
-    weakness: emp.weakness,
-    attitude: emp.attitude,
-    principle: emp.principle,
-    hobby: emp.hobby,
-    dislike: emp.dislike,
-    credo: emp.credo,
-    report: emp.report,
-    avatar: emp.avatar,
+  const persona = normalizePersona(emp, { id: 'main' })
+  const workspaceResult = await ipc.saveAgentWorkspace({
+    ...persona,
+    files: {
+      SOUL: generateSoulMd(persona),
+      IDENTITY: generateIdentityMd(persona),
+      USER: generateUserMd(persona),
+    },
   })
+  if (workspaceResult?.ok === false) {
+    finishError.value = workspaceResult.error || '助手配置保存失败'
+    return
+  }
 
   // Show gateway starting overlay
   startingGateway.value = true
 
-  await ipc.setupComplete()
+  const setupResult = await ipc.setupComplete()
+  if (setupResult?.ok === false) {
+    startingGateway.value = false
+    finishError.value = setupResult.error || '初始化完成状态保存失败'
+    return
+  }
 
   // Wait for gateway to be ready (poll up to 60s)
   const start = Date.now()
@@ -886,8 +859,8 @@ async function finish() {
   text-align: left;
 }
 
-/* Employee step (Step 2) — tabbed */
-.employee-step {
+/* Assistants step (Step 2) — tabbed */
+.assistants-step {
   align-items: stretch !important;
   max-width: 520px;
   width: 100%;

@@ -138,6 +138,68 @@
           <div v-if="toast.show && toast.key === 'chat'" class="toast toast-success">{{ toast.msg }}</div>
         </div>
 
+        <!-- Voice -->
+        <div v-if="activeTab === 'voice'" class="settings-section voice-section">
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.voice.apiKey') }}</label>
+            <input
+              v-model="voiceApiKey"
+              type="password"
+              :placeholder="maskedVoiceApiKey || t('settings.voice.apiKeyPlaceholder')"
+              class="section-input"
+              autocomplete="off"
+            />
+          </div>
+          <div class="section-block">
+            <label class="checkbox-label">
+              <input v-model="voiceShowText" type="checkbox" />
+              <span>{{ t('settings.voice.showText') }}</span>
+            </label>
+            <p class="voice-hint">{{ t('settings.voice.showTextHint') }}</p>
+          </div>
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.voice.voice') }}</label>
+            <p class="voice-hint">{{ t('settings.voice.voiceHint') }}</p>
+            <p v-if="voiceLoading" class="voice-hint">{{ t('settings.voice.loading') }}</p>
+            <p v-else-if="voiceLoadError" class="voice-error">{{ voiceLoadError }}</p>
+            <p v-if="voicePreviewError" class="voice-error">{{ voicePreviewError }}</p>
+            <div class="voice-card-grid">
+              <div
+                v-for="voice in voiceOptions"
+                :key="voice.id"
+                class="voice-card"
+                :class="{ selected: voiceId === voice.id }"
+                @click="voiceId = voice.id"
+              >
+                <span class="voice-card-name">{{ voice.name }}</span>
+                <span class="voice-card-id">{{ voice.id }}</span>
+                <span class="voice-card-desc">{{ voice.desc }}</span>
+                <span v-if="voice.language" class="voice-card-lang">{{ voice.language }}</span>
+                <span class="voice-card-actions">
+                  <button
+                    type="button"
+                    class="voice-use-btn"
+                    :disabled="voiceId === voice.id"
+                    @click.stop="useVoice(voice)"
+                  >
+                    {{ voiceId === voice.id ? t('settings.voice.enabled') : t('settings.voice.enable') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="voice-preview-btn"
+                    :disabled="!voice.sampleUrl || previewingVoiceId === voice.id"
+                    @click.stop="playVoiceSample(voice)"
+                  >
+                    {{ previewingVoiceId === voice.id ? t('settings.voice.previewing') : t('settings.voice.preview') }}
+                  </button>
+                </span>
+              </div>
+            </div>
+          </div>
+          <button class="btn btn-primary section-btn" @click="saveVoice">{{ t('common.save') }}</button>
+          <div v-if="toast.show && toast.key === 'voice'" class="toast toast-success">{{ toast.msg }}</div>
+        </div>
+
         <!-- Registry -->
         <div v-if="activeTab === 'registry'" class="settings-section">
           <div class="section-block">
@@ -170,8 +232,85 @@
             <p class="registry-active-hint">{{ t('settings.registry.currentActive') }}: {{ npmRegistry }}</p>
             <p class="registry-hint-sub">{{ t('settings.registry.npmHint') }}</p>
           </div>
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.registry.httpProxy') }}</label>
+            <input v-model="httpProxy" type="text" placeholder="http://127.0.0.1:7890" class="section-input" />
+          </div>
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.registry.httpsProxy') }}</label>
+            <input v-model="httpsProxy" type="text" placeholder="http://127.0.0.1:7890" class="section-input" />
+            <p class="registry-hint-sub">{{ t('settings.registry.proxyHint') }}</p>
+          </div>
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.registry.githubProxy') }}</label>
+            <input v-model="githubProxy" type="text" placeholder="https://gh-proxy.example.com/" class="section-input" />
+            <p class="registry-hint-sub">{{ t('settings.registry.githubProxyHint') }}</p>
+          </div>
           <button class="btn btn-primary section-btn" @click="saveRegistry">{{ t('common.save') }}</button>
           <div v-if="toast.show && toast.key === 'registry'" class="toast toast-success">{{ toast.msg }}</div>
+        </div>
+
+        <!-- Tool Packages -->
+        <div v-if="activeTab === 'tools'" class="settings-section tools-section">
+          <div class="section-block">
+            <label class="section-label">{{ t('settings.tools.title') }}</label>
+            <p class="tools-hint">{{ t('settings.tools.hint') }}</p>
+          </div>
+          <div v-if="toolsLoading" class="tools-loading">{{ t('settings.tools.loading') }}</div>
+          <div v-else class="tool-card-grid">
+            <div
+              v-for="tool in toolPackages"
+              :key="tool.id"
+              class="tool-card"
+              :class="{ installed: tool.installed, unsupported: !tool.supported }"
+            >
+              <div class="tool-logo" v-html="getToolIconSvg(tool.icon || tool.id)"></div>
+              <div class="tool-main">
+                <div class="tool-title-row">
+                  <span class="tool-name">{{ tool.name }}</span>
+                  <span v-if="tool.builtin" class="tool-tag">{{ t('settings.tools.builtin') }}</span>
+                  <span v-if="!tool.supported" class="tool-tag unsupported">{{ t('settings.tools.unsupported') }}</span>
+                  <span v-else-if="tool.installed" class="tool-tag installed">{{ t('settings.tools.installed') }}</span>
+                </div>
+                <p class="tool-desc">{{ tool.description }}</p>
+                <div class="tool-meta">
+                  <span>{{ t('settings.tools.size') }}: {{ tool.installedSize || tool.size }}</span>
+                  <span v-if="tool.installed && tool.path" class="tool-path" :title="tool.path">{{ tool.path }}</span>
+                </div>
+                <div v-if="toolProgress[tool.id]" class="tool-progress">
+                  <div class="tool-progress-bar">
+                    <span :style="{ width: `${toolProgress[tool.id].percent || 0}%` }"></span>
+                  </div>
+                  <span class="tool-progress-text">{{ toolProgress[tool.id].phase }}</span>
+                </div>
+              </div>
+              <div class="tool-actions">
+                <button
+                  class="btn btn-primary tool-action-btn"
+                  :disabled="!tool.supported || installingToolId === tool.id"
+                  @click="installTool(tool)"
+                >
+                  {{ installingToolId === tool.id ? t('settings.tools.installing') : (tool.installed ? t('settings.tools.reinstall') : t('settings.tools.install')) }}
+                </button>
+                <button
+                  v-if="tool.installed"
+                  class="btn btn-secondary tool-action-btn"
+                  @click="openToolDir(tool)"
+                >
+                  {{ t('settings.tools.openDir') }}
+                </button>
+                <button
+                  v-if="tool.installed && !tool.builtin"
+                  class="btn btn-secondary tool-action-btn"
+                  :disabled="installingToolId === tool.id"
+                  @click="uninstallTool(tool)"
+                >
+                  {{ t('settings.tools.uninstall') }}
+                </button>
+              </div>
+            </div>
+          </div>
+          <div v-if="toolMessage" class="tools-message" :class="{ error: toolMessageType === 'error' }">{{ toolMessage }}</div>
         </div>
 
         <!-- Gateway -->
@@ -329,6 +468,7 @@ import { useGatewayStore } from '@/stores/gateway'
 import { t, setLocale, currentLocale } from '@/i18n'
 import { ipc } from '@/lib/ipc'
 import { getIcon } from '@/lib/icons'
+import { getToolIconSvg } from '@/lib/tool-icons'
 
 const uiStore = useUiStore()
 const configStore = useConfigStore()
@@ -404,6 +544,30 @@ const langModel = computed({
 const sendKey = ref('ctrl+enter')
 const defaultAssistant = ref('')
 
+// Voice
+const voiceApiKey = ref('')
+const maskedVoiceApiKey = ref('')
+const voiceId = ref('longanhuan_v3')
+const voiceShowText = ref(true)
+const voiceLoading = ref(false)
+const voiceLoadError = ref('')
+const voicePreviewError = ref('')
+const previewingVoiceId = ref('')
+let previewAudio = null
+const fallbackVoiceOptions = [
+  { id: 'longanhuan_v3', name: '龙安欢（V3）', trait: '欢脱元气女', age: '20~30岁', language: '中文（普通话、广东话、东北话、河南话、湖南话、陕西话、山东话、四川话、安徽话）、英文', desc: '欢脱元气女 · 20~30岁', sampleUrl: 'https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20251117/lolnxw/%E9%BE%99%E5%AE%89%E6%AC%A2.mp3' },
+  { id: 'longxiaochun_v3', name: '龙小淳', trait: '知性积极女', age: '25~30岁', language: '中文（普通话）、英文', desc: '知性积极女 · 25~30岁', sampleUrl: 'https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260105/flmrpr/%E9%BE%99%E5%B0%8F%E6%B7%B3.mp3' },
+  { id: 'longxiaoxia_v3', name: '龙小夏', trait: '沉稳权威女', age: '25~30岁', language: '中文（普通话）、英文', desc: '沉稳权威女 · 25~30岁', sampleUrl: 'https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260105/bncrea/%E9%BE%99%E5%B0%8F%E5%A4%8F.mp3' },
+  { id: 'longhua_v3', name: '龙华', trait: '元气甜美女', age: '20~25岁', language: '中文（普通话）、英文', desc: '元气甜美女 · 20~25岁', sampleUrl: 'https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260128/bmmeqr/%E9%BE%99%E5%8D%8E.mp3' },
+  { id: 'longcheng_v3', name: '龙橙', trait: '智慧青年男', age: '20~25岁', language: '中文（普通话）、英文', desc: '智慧青年男 · 20~25岁', sampleUrl: 'https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260105/qagbzd/%E9%BE%99%E6%A9%99.mp3' },
+  { id: 'longlaotie_v3', name: '龙老铁', trait: '东北直率男', age: '25~30岁', language: '中文（东北话）、英文', desc: '东北直率男 · 25~30岁', sampleUrl: 'https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260105/yuxzau/%E9%BE%99%E8%80%81%E9%93%81.mp3' },
+]
+const voiceOptions = ref([...fallbackVoiceOptions])
+
+function resolveTtsModel(voice) {
+  return String(voice || '').endsWith('_v3') ? 'cosyvoice-v3-flash' : 'cosyvoice-v3-flash'
+}
+
 // Gateway
 const autoStart = ref(false)
 const startupTimeout = ref(120)
@@ -418,6 +582,17 @@ const NPM_REGISTRY_PRESETS = [
 const npmRegistry = ref('https://registry.npmmirror.com')
 const customRegistry = ref('')
 const registryMode = ref('preset')
+const httpProxy = ref('')
+const httpsProxy = ref('')
+const githubProxy = ref('')
+
+// Tool packages
+const toolPackages = ref([])
+const toolsLoading = ref(false)
+const installingToolId = ref('')
+const toolProgress = reactive({})
+const toolMessage = ref('')
+const toolMessageType = ref('info')
 
 // Data directory (read-only, from CLAWSHELL_HOME env)
 const dataDirDisplay = ref('')
@@ -459,7 +634,9 @@ const tabs = [
   { key: 'profile', icon: '👤', label: 'settings.tab.profile' },
   { key: 'appearance', icon: '🎨', label: 'settings.tab.appearance' },
   { key: 'chat', icon: '💬', label: 'settings.tab.chat' },
+  { key: 'voice', icon: '🎙️', label: 'settings.tab.voice' },
   { key: 'registry', icon: '📦', label: 'settings.tab.registry' },
+  { key: 'tools', icon: '🧰', label: 'settings.tab.tools' },
   { key: 'gateway', icon: '⚡', label: 'settings.tab.gateway' },
   { key: 'about', icon: 'ℹ️', label: 'settings.tab.about' },
 ]
@@ -531,17 +708,52 @@ async function loadSettings() {
   sendKey.value = chat.sendKey || 'ctrl+enter'
   defaultAssistant.value = chat.defaultAssistant || ''
 
+  const voice = settings.voice || {}
+  voiceApiKey.value = voice.dashscopeApiKey || ''
+  maskedVoiceApiKey.value = voice.dashscopeApiKey ? `${voice.dashscopeApiKey.slice(0, 6)}****${voice.dashscopeApiKey.slice(-4)}` : ''
+  voiceId.value = voice.voice || 'longanhuan_v3'
+  voiceShowText.value = voice.showImmersiveText !== false
+
   const gw = settings.gateway || {}
   autoStart.value = gw.autoStart || false
   startupTimeout.value = gw.startupTimeout || 120
 
   const reg = settings.registry || {}
   npmRegistry.value = reg.npm || 'https://registry.npmmirror.com'
+  httpProxy.value = reg.proxy?.http || ''
+  httpsProxy.value = reg.proxy?.https || ''
+  githubProxy.value = reg.githubProxy || ''
   const isPreset = NPM_REGISTRY_PRESETS.some(p => p.url === npmRegistry.value)
   registryMode.value = isPreset ? 'preset' : 'custom'
   if (!isPreset) customRegistry.value = npmRegistry.value
 
   // dataDir is now read-only from CLAWSHELL_HOME env, populated via getSystemInfo
+}
+
+async function loadCosyVoiceVoices() {
+  voiceLoading.value = true
+  voiceLoadError.value = ''
+  try {
+    const res = await ipc.getCosyVoiceVoices()
+    if (!res?.ok || !Array.isArray(res.voices) || res.voices.length === 0) {
+      throw new Error(res?.error || '音色列表加载失败，已使用内置兜底列表')
+    }
+    voiceOptions.value = res.voices.map(voice => ({
+      ...voice,
+      desc: voice.desc || [voice.trait, voice.age].filter(Boolean).join(' · '),
+    }))
+  } catch (err) {
+    voiceOptions.value = [...fallbackVoiceOptions]
+    voiceLoadError.value = err.message || '音色列表加载失败，已使用内置兜底列表'
+  } finally {
+    if (voiceId.value && !voiceOptions.value.some(voice => voice.id === voiceId.value)) {
+      voiceOptions.value = [
+        { id: voiceId.value, name: voiceId.value, desc: '当前已保存音色', sampleUrl: '' },
+        ...voiceOptions.value,
+      ]
+    }
+    voiceLoading.value = false
+  }
 }
 
 async function saveSettingsPatch(patch) {
@@ -582,13 +794,123 @@ async function saveChat() {
   showToast(t('common.saveSuccess'), 'chat')
 }
 
+async function saveVoice() {
+  await saveSettingsPatch({
+    voice: {
+      dashscopeApiKey: voiceApiKey.value.trim(),
+      voice: voiceId.value,
+      showImmersiveText: voiceShowText.value,
+      asrModel: 'qwen3-asr-flash-realtime',
+      ttsModel: resolveTtsModel(voiceId.value),
+    },
+  })
+  maskedVoiceApiKey.value = voiceApiKey.value ? `${voiceApiKey.value.slice(0, 6)}****${voiceApiKey.value.slice(-4)}` : ''
+  showToast(t('common.saveSuccess'), 'voice')
+}
+
+async function useVoice(voice) {
+  if (!voice?.id) return
+  voiceId.value = voice.id
+  await saveVoice()
+}
+
+async function playVoiceSample(voice) {
+  if (!voice?.sampleUrl) return
+  voicePreviewError.value = ''
+  previewingVoiceId.value = voice.id
+  try {
+    if (previewAudio) {
+      previewAudio.pause()
+      previewAudio.removeAttribute('src')
+      previewAudio.load()
+    }
+    const res = await ipc.getVoiceSampleDataUrl(voice.sampleUrl)
+    const src = res?.ok && res.dataUrl ? res.dataUrl : voice.sampleUrl
+    previewAudio = new Audio(src)
+    previewAudio.onended = () => { previewingVoiceId.value = '' }
+    previewAudio.onerror = () => {
+      voicePreviewError.value = `试听失败：${voice.name || voice.id}`
+      previewingVoiceId.value = ''
+    }
+    await previewAudio.play()
+  } catch (err) {
+    voicePreviewError.value = `试听失败：${err.message || err}`
+    previewingVoiceId.value = ''
+  }
+}
+
 async function saveRegistry() {
   const url = registryMode.value === 'custom' ? customRegistry.value : npmRegistry.value
   await saveSettingsPatch({
-    registry: { npm: url },
+    registry: {
+      npm: url,
+      proxy: {
+        http: httpProxy.value.trim(),
+        https: httpsProxy.value.trim(),
+      },
+      githubProxy: githubProxy.value.trim(),
+    },
   })
   npmRegistry.value = url
   showToast(t('common.saveSuccess'), 'registry')
+}
+
+async function loadToolPackages() {
+  toolsLoading.value = true
+  try {
+    toolPackages.value = await ipc.listToolPackages()
+  } catch {
+    toolPackages.value = []
+  } finally {
+    toolsLoading.value = false
+  }
+}
+
+async function installTool(tool) {
+  if (!tool?.supported || installingToolId.value) return
+  installingToolId.value = tool.id
+  toolMessage.value = ''
+  toolMessageType.value = 'info'
+  toolProgress[tool.id] = { percent: 5, phase: t('settings.tools.downloading') }
+  try {
+    const result = await ipc.installToolPackage(tool.id)
+    if (result?.ok) {
+      toolMessage.value = result.manual ? (result.message || t('settings.tools.manualOpened')) : t('settings.tools.installSuccess')
+      toolMessageType.value = 'info'
+      await loadToolPackages()
+    } else {
+      toolMessage.value = `${t('settings.tools.installFailed')}: ${result?.error || 'unknown'}`
+      toolMessageType.value = 'error'
+    }
+  } catch (err) {
+    toolMessage.value = `${t('settings.tools.installFailed')}: ${err.message || err}`
+    toolMessageType.value = 'error'
+  } finally {
+    installingToolId.value = ''
+    setTimeout(() => { delete toolProgress[tool.id] }, 1200)
+  }
+}
+
+async function uninstallTool(tool) {
+  if (!tool?.installed || tool.builtin) return
+  try {
+    const result = await ipc.uninstallToolPackage(tool.id)
+    if (result?.ok) {
+      toolMessage.value = t('settings.tools.uninstallSuccess')
+      toolMessageType.value = 'info'
+      await loadToolPackages()
+    } else {
+      toolMessage.value = `${t('settings.tools.uninstallFailed')}: ${result?.error || 'unknown'}`
+      toolMessageType.value = 'error'
+    }
+  } catch (err) {
+    toolMessage.value = `${t('settings.tools.uninstallFailed')}: ${err.message || err}`
+    toolMessageType.value = 'error'
+  }
+}
+
+async function openToolDir(tool) {
+  try { await ipc.openToolPackageDir(tool.id) } catch {}
 }
 
 async function handleRestart() {
@@ -751,8 +1073,17 @@ function openContact() {
 
 onMounted(async () => {
   await loadSettings()
+  await loadCosyVoiceVoices()
   await loadSystemInfo()
   await loadSystemFonts()
+  await loadToolPackages()
+  ipc.onToolPackageProgress?.((data) => {
+    if (!data?.id) return
+    toolProgress[data.id] = {
+      percent: data.percent || 0,
+      phase: t(`settings.tools.phase.${data.phase}`) || data.phase,
+    }
+  })
 })
 
 watch(fontSize, (val) => {
@@ -1020,6 +1351,118 @@ watch(autoStart, () => {
   background: var(--color-primary-light);
 }
 .radio-item input { display: none; }
+
+/* Voice */
+.voice-section {
+  max-width: 760px;
+}
+
+.voice-hint {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm);
+}
+
+.voice-error {
+  margin: 0;
+  color: var(--color-warning);
+  font-size: var(--font-size-sm);
+}
+
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+.checkbox-label input {
+  accent-color: var(--color-primary);
+}
+
+.voice-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  max-width: 760px;
+}
+
+.voice-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 132px;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, transform 0.15s, background 0.15s;
+}
+
+.voice-card:hover {
+  border-color: var(--color-primary);
+  transform: translateY(-1px);
+}
+
+.voice-card.selected {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.voice-card-name {
+  font-weight: 700;
+}
+
+.voice-card-id {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+.voice-card-desc {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+
+.voice-card-lang {
+  flex: 1;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+}
+
+.voice-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.voice-preview-btn,
+.voice-use-btn {
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+}
+
+.voice-use-btn {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+
+.voice-preview-btn:disabled,
+.voice-use-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 /* Gateway */
 .gateway-status-row {
@@ -1396,6 +1839,173 @@ watch(autoStart, () => {
   font-size: 12px;
   color: var(--color-text-tertiary);
   margin-top: 4px;
+}
+
+/* Tool packages */
+.tools-section {
+  max-width: 920px;
+}
+
+.tools-hint,
+.tools-loading,
+.tools-message {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+.tools-message {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+}
+
+.tools-message.error {
+  color: var(--color-error);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.tool-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 12px;
+}
+
+.tool-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+}
+
+.tool-card.installed {
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.tool-card.unsupported {
+  opacity: 0.62;
+}
+
+.tool-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+}
+
+.tool-logo :deep(svg) {
+  width: 26px;
+  height: 26px;
+  display: block;
+}
+
+.tool-main {
+  min-width: 0;
+}
+
+.tool-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  flex-wrap: wrap;
+}
+
+.tool-name {
+  color: var(--color-text);
+  font-weight: 700;
+}
+
+.tool-tag {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.tool-tag.installed {
+  color: var(--color-success);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.tool-tag.unsupported {
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-tertiary);
+}
+
+.tool-desc {
+  margin: 6px 0 8px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+
+.tool-meta {
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+}
+
+.tool-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  min-height: 34px;
+}
+
+.tool-action-btn {
+  padding: 7px 12px !important;
+  font-size: 13px !important;
+}
+
+.tool-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.tool-progress-bar {
+  flex: 1;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--color-bg-tertiary);
+}
+
+.tool-progress-bar span {
+  display: block;
+  height: 100%;
+  background: var(--color-primary);
+  transition: width 0.2s;
+}
+
+.tool-progress-text {
+  width: 72px;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
 }
 
 </style>

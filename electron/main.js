@@ -18,8 +18,11 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const net = require('net');
+const tls = require('tls');
 const os = require('os');
+const { randomUUID } = require('crypto');
 const AdmZip = require('adm-zip');
+const WebSocket = require('ws');
 
 // ═══════════════════════════════════════════
 // 常量定义
@@ -44,6 +47,10 @@ let isRestarting = false;
 let crashCount = 0;
 let healthCheckTimer = null;
 let settingsCache = null;
+const immersiveVoiceSessions = new Map();
+let cosyVoiceListCache = null;
+let cosyVoiceListCacheAt = 0;
+let appliedProxyEnv = { http: '', https: '', all: '' };
 
 // ═══════════════════════════════════════════
 // 动态路径计算
@@ -73,11 +80,458 @@ function resolveDataDir() {
 
 function resolvePaths() {
   const dataDir = resolveDataDir();
+  const configDir = path.join(dataDir, '.openclaw');
+  const legacyConfigDir = path.join(dataDir, '.openclaw');
   return {
     dataDir,
-    configDir: path.join(dataDir, '.openclaw'),
-    configPath: path.join(dataDir, '.openclaw', 'openclaw.json'),
+    configDir,
+    configPath: path.join(configDir, 'openclaw.json'),
+    legacyConfigDir,
+    legacyConfigPath: path.join(legacyConfigDir, 'openclaw.json'),
     settingsPath: path.join(dataDir, 'clawshell-settings.json'),
+  };
+}
+
+function getBundledRuntimeRoot() {
+  return path.join(getBundledResourcesRoot(), 'runtime');
+}
+
+function getBundledResourcesRoot() {
+  if (isDev) {
+    return path.join(__dirname, '..', 'resources');
+  }
+  return process.resourcesPath;
+}
+
+function getManagedToolsRoot() {
+  return path.join(getBundledResourcesRoot(), 'tools');
+}
+
+function getBundledSkillsRoot() {
+  return path.join(getBundledResourcesRoot(), 'skills');
+}
+
+function getGlobalSkillsDir() {
+  const { legacyConfigDir } = resolvePaths();
+  return path.join(legacyConfigDir, 'skills');
+}
+
+function getPathEnvKey(env = process.env) {
+  if (process.platform !== 'win32') return 'PATH';
+  return Object.keys(env).find(key => key.toLowerCase() === 'path') || 'Path';
+}
+
+function prependPathEntries(env, entries) {
+  const pathKey = getPathEnvKey(env);
+  const current = env[pathKey] || env.PATH || '';
+  const seen = new Set();
+  for (const entry of current.split(path.delimiter)) {
+    if (!entry) continue;
+    const lookup = process.platform === 'win32' ? path.resolve(entry).toLowerCase() : path.resolve(entry);
+    seen.add(lookup);
+  }
+  const normalizedEntries = [];
+  for (const entry of entries) {
+    if (!entry || !fs.existsSync(entry)) continue;
+    const normalized = path.resolve(entry);
+    const lookup = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    if (seen.has(lookup)) continue;
+    seen.add(lookup);
+    normalizedEntries.push(normalized);
+  }
+  if (normalizedEntries.length > 0) {
+    env[pathKey] = `${normalizedEntries.join(path.delimiter)}${path.delimiter}${current}`;
+    if (pathKey !== 'PATH') env.PATH = env[pathKey];
+  }
+  return env;
+}
+
+function collectToolPathEntries(toolDir) {
+  const entries = [];
+  if (!toolDir || !fs.existsSync(toolDir)) return entries;
+  entries.push(toolDir);
+  for (const commonBinDir of ['bin', 'Scripts', path.join('node_modules', '.bin')]) {
+    const binDir = path.join(toolDir, commonBinDir);
+    if (fs.existsSync(binDir)) entries.push(binDir);
+  }
+  return entries;
+}
+
+function getManagedResourcePathEntries() {
+  const resourcesRoot = getBundledResourcesRoot();
+  if (!fs.existsSync(resourcesRoot)) return [];
+
+  const entries = [];
+  for (const item of fs.readdirSync(resourcesRoot, { withFileTypes: true })) {
+    if (!item.isDirectory()) continue;
+    const topDir = path.join(resourcesRoot, item.name);
+    entries.push(...collectToolPathEntries(topDir));
+
+    if (['runtime', 'tools'].includes(item.name)) {
+      for (const child of fs.readdirSync(topDir, { withFileTypes: true })) {
+        if (child.isDirectory()) entries.push(...collectToolPathEntries(path.join(topDir, child.name)));
+      }
+    }
+  }
+  return entries;
+}
+
+function applyBundledRuntimeEnvironment() {
+  const entries = getManagedResourcePathEntries();
+  prependPathEntries(process.env, entries);
+  const playwrightBrowsers = path.join(getManagedToolsRoot(), 'playwright', 'browsers');
+  if (fs.existsSync(playwrightBrowsers)) process.env.PLAYWRIGHT_BROWSERS_PATH = playwrightBrowsers;
+  if (entries.length > 0) {
+    log(`[${APP_NAME}] Runtime PATH entries: ${entries.join(path.delimiter)}`);
+  }
+}
+
+function normalizeOptionalUrl(value) {
+  return String(value || '').trim();
+}
+
+function normalizeProxyUrl(value) {
+  const text = normalizeOptionalUrl(value);
+  if (!text) return '';
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `http://${text}`;
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol === 'https:' && isLikelyPlainHttpProxyHost(parsed.hostname, parsed.port)) {
+      parsed.protocol = 'http:';
+      return parsed.toString();
+    }
+  } catch {
+    return withProtocol;
+  }
+  return withProtocol;
+}
+
+function applyProxySettingsToEnv(env, settings = getSettings()) {
+  const proxy = settings.registry?.proxy || {};
+  const httpProxy = normalizeProxyUrl(proxy.http);
+  const httpsProxy = normalizeProxyUrl(proxy.https);
+
+  const clearManaged = (keys, previous) => {
+    if (!previous) return;
+    for (const key of keys) {
+      if (env[key] === previous) delete env[key];
+    }
+  };
+
+  if (httpProxy) {
+    env.HTTP_PROXY = httpProxy;
+    env.http_proxy = httpProxy;
+    env.NPM_CONFIG_PROXY = httpProxy;
+  } else {
+    clearManaged(['HTTP_PROXY', 'http_proxy', 'NPM_CONFIG_PROXY'], appliedProxyEnv.http);
+  }
+
+  if (httpsProxy) {
+    env.HTTPS_PROXY = httpsProxy;
+    env.https_proxy = httpsProxy;
+    env.NPM_CONFIG_HTTPS_PROXY = httpsProxy;
+  } else {
+    clearManaged(['HTTPS_PROXY', 'https_proxy', 'NPM_CONFIG_HTTPS_PROXY'], appliedProxyEnv.https);
+  }
+
+  const allProxy = httpsProxy || httpProxy;
+  if (allProxy) {
+    env.ALL_PROXY = allProxy;
+    env.all_proxy = allProxy;
+  } else {
+    clearManaged(['ALL_PROXY', 'all_proxy'], appliedProxyEnv.all);
+  }
+  appliedProxyEnv = { http: httpProxy, https: httpsProxy, all: allProxy };
+  return env;
+}
+
+function applyNetworkProxyEnvironment() {
+  applyProxySettingsToEnv(process.env);
+  const proxy = getSettings().registry?.proxy || {};
+  if (proxy.http || proxy.https) {
+    log(`[${APP_NAME}] Proxy environment enabled: http=${normalizeProxyUrl(proxy.http) || '-'}, https=${normalizeProxyUrl(proxy.https) || '-'}`);
+  }
+}
+
+function applyGithubProxyUrl(rawUrl) {
+  const proxy = normalizeOptionalUrl(getSettings().registry?.githubProxy);
+  if (!proxy) return rawUrl;
+
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return rawUrl;
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (host !== 'github.com' && !host.endsWith('.github.com')) return rawUrl;
+  if (rawUrl.startsWith(proxy)) return rawUrl;
+
+  if (proxy.includes('{url}')) return proxy.replaceAll('{url}', rawUrl);
+  return `${proxy.replace(/\/+$/, '')}/${rawUrl}`;
+}
+
+function isLoopbackHost(hostname = '') {
+  const host = hostname.toLowerCase();
+  return host === 'localhost'
+    || host === '127.0.0.1'
+    || host === '::1'
+    || host.startsWith('127.');
+}
+
+function isLikelyPlainHttpProxyHost(hostname = '', port = '') {
+  const host = hostname.toLowerCase();
+  const normalizedPort = String(port || '');
+  if (normalizedPort === '443' || normalizedPort === '8443') return false;
+  if (isLoopbackHost(host) || host === '0.0.0.0') return true;
+  if (host.startsWith('10.') || host.startsWith('192.168.')) return true;
+  const private172 = host.match(/^172\.(\d+)\./);
+  return !!private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31;
+}
+
+function getUrlPort(urlObj) {
+  if (urlObj.port) return Number(urlObj.port);
+  return urlObj.protocol === 'https:' ? 443 : 80;
+}
+
+function getRequestPath(urlObj) {
+  return `${urlObj.pathname || '/'}${urlObj.search || ''}`;
+}
+
+function hasHeader(headers, name) {
+  const lower = name.toLowerCase();
+  return Object.keys(headers || {}).some(key => key.toLowerCase() === lower);
+}
+
+function getDefaultRequestHeaders(headers = {}) {
+  const result = {};
+  if (!hasHeader(headers, 'user-agent')) {
+    result['User-Agent'] = `${APP_NAME}/${app.getVersion?.() || 'dev'}`;
+  }
+  for (const [key, value] of Object.entries(headers || {})) {
+    if (value === undefined || value === null) continue;
+    result[key] = value;
+  }
+  return result;
+}
+
+function getProxyAuthHeaders(proxyUrl) {
+  if (!proxyUrl?.username && !proxyUrl?.password) return {};
+  const username = decodeURIComponent(proxyUrl.username || '');
+  const password = decodeURIComponent(proxyUrl.password || '');
+  const token = Buffer.from(`${username}:${password}`).toString('base64');
+  return { 'Proxy-Authorization': `Basic ${token}` };
+}
+
+function formatNetworkError(err) {
+  if (!err) return 'Network request failed';
+  if (Array.isArray(err.errors) && err.errors.length > 0) {
+    const details = err.errors
+      .map(item => {
+        const target = item.address && item.port ? `${item.address}:${item.port}` : '';
+        const message = item.message || item.code || String(item);
+        return target ? `${message} (${target})` : message;
+      })
+      .join('; ');
+    return `${err.code || err.name || 'AggregateError'}: ${details}`;
+  }
+  if (err.message) return err.message;
+  if (err.code) return `${err.name || 'Network error'}: ${err.code}`;
+  return String(err);
+}
+
+function getProxyForRequest(rawUrl, settings = getSettings()) {
+  let target;
+  try {
+    target = rawUrl instanceof URL ? rawUrl : new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') return null;
+  if (isLoopbackHost(target.hostname)) return null;
+
+  const proxy = settings.registry?.proxy || {};
+  const httpProxy = normalizeProxyUrl(proxy.http);
+  const httpsProxy = normalizeProxyUrl(proxy.https);
+  const selected = target.protocol === 'https:'
+    ? (httpsProxy || httpProxy)
+    : (httpProxy || httpsProxy);
+  if (!selected) return null;
+
+  try {
+    const parsed = new URL(selected);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function formatConnectHost(hostname, port) {
+  const host = hostname.includes(':') && !hostname.startsWith('[')
+    ? `[${hostname}]`
+    : hostname;
+  return `${host}:${port}`;
+}
+
+function openRequest(client, options, timeout = 15000) {
+  return new Promise((resolve, reject) => {
+    const req = client.request(options, (res) => resolve({ req, res }));
+    req.on('error', reject);
+    req.setTimeout(timeout, () => req.destroy(new Error('Request timeout')));
+    req.end();
+  });
+}
+
+function createSingleSocketHttpsAgent(socket) {
+  const agent = new https.Agent({ keepAlive: false, maxSockets: 1 });
+  agent.createConnection = () => socket;
+  return agent;
+}
+
+function createProxyTunnel(targetUrl, proxyUrl, timeout = 15000) {
+  return new Promise((resolve, reject) => {
+    const proxyClient = proxyUrl.protocol === 'https:' ? https : http;
+    const targetHost = formatConnectHost(targetUrl.hostname, getUrlPort(targetUrl));
+    const req = proxyClient.request({
+      hostname: proxyUrl.hostname,
+      port: getUrlPort(proxyUrl),
+      method: 'CONNECT',
+      path: targetHost,
+      headers: getProxyAuthHeaders(proxyUrl),
+    });
+
+    req.on('connect', (res, socket) => {
+      if (res.statusCode !== 200) {
+        socket.destroy();
+        reject(new Error(`Proxy CONNECT failed: HTTP ${res.statusCode}`));
+        return;
+      }
+      const tlsSocket = tls.connect({ socket, servername: targetUrl.hostname });
+      const onSecure = () => {
+        tlsSocket.off('error', onError);
+        resolve(tlsSocket);
+      };
+      const onError = (err) => {
+        tlsSocket.off('secureConnect', onSecure);
+        reject(err);
+      };
+      tlsSocket.once('secureConnect', onSecure);
+      tlsSocket.once('error', onError);
+    });
+    req.on('error', reject);
+    req.setTimeout(timeout, () => req.destroy(new Error('Proxy CONNECT timeout')));
+    req.end();
+  });
+}
+
+async function openHttpResponse(rawUrl, options = {}) {
+  const urlObj = rawUrl instanceof URL ? rawUrl : new URL(rawUrl);
+  const timeout = options.timeout || 15000;
+  const method = options.method || 'GET';
+  const headers = getDefaultRequestHeaders(options.headers || {});
+  const proxyUrl = options.proxy === false ? null : getProxyForRequest(urlObj);
+
+  if (proxyUrl && urlObj.protocol === 'http:') {
+    const proxyHeaders = {
+      ...headers,
+      ...getProxyAuthHeaders(proxyUrl),
+    };
+    if (!hasHeader(proxyHeaders, 'host')) proxyHeaders.Host = urlObj.host;
+    const proxyClient = proxyUrl.protocol === 'https:' ? https : http;
+    return openRequest(proxyClient, {
+      hostname: proxyUrl.hostname,
+      port: getUrlPort(proxyUrl),
+      method,
+      path: urlObj.toString(),
+      headers: proxyHeaders,
+    }, timeout);
+  }
+
+  if (proxyUrl && urlObj.protocol === 'https:') {
+    const socket = await createProxyTunnel(urlObj, proxyUrl, timeout);
+    const agent = createSingleSocketHttpsAgent(socket);
+    try {
+      const opened = await openRequest(https, {
+        hostname: urlObj.hostname,
+        port: getUrlPort(urlObj),
+        method,
+        path: getRequestPath(urlObj),
+        headers,
+        servername: urlObj.hostname,
+        agent,
+      }, timeout);
+      opened.res.once('close', () => agent.destroy());
+      return opened;
+    } catch (err) {
+      agent.destroy();
+      socket.destroy();
+      throw err;
+    }
+  }
+
+  const client = urlObj.protocol === 'https:' ? https : http;
+  return openRequest(client, {
+    hostname: urlObj.hostname,
+    port: getUrlPort(urlObj),
+    method,
+    path: getRequestPath(urlObj),
+    headers,
+  }, timeout);
+}
+
+function readResponseBuffer(res, options = {}) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let settled = false;
+    const maxBytes = options.maxBytes || 0;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      res.destroy(err);
+      reject(err);
+    };
+    res.on('data', chunk => {
+      total += chunk.length;
+      if (maxBytes && total > maxBytes) {
+        fail(new Error(options.maxBytesError || 'Response is too large'));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    res.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks));
+    });
+    res.on('error', fail);
+  });
+}
+
+function isRedirectResponse(res) {
+  return res.statusCode >= 300 && res.statusCode < 400 && !!res.headers.location;
+}
+
+async function requestBuffer(rawUrl, options = {}, redirects = 5) {
+  const { req, res } = await openHttpResponse(rawUrl, options);
+  if (isRedirectResponse(res)) {
+    if (redirects <= 0) {
+      res.resume();
+      req.destroy();
+      throw new Error('Too many redirects');
+    }
+    const nextUrl = new URL(res.headers.location, rawUrl).toString();
+    res.resume();
+    req.destroy();
+    return requestBuffer(nextUrl, options, redirects - 1);
+  }
+  const buffer = await readResponseBuffer(res, options);
+  return {
+    statusCode: res.statusCode || 0,
+    headers: res.headers || {},
+    buffer,
   };
 }
 
@@ -128,14 +582,91 @@ function getOpenClawEnv() {
   if (settings.registry?.npm) {
     env.NPM_CONFIG_REGISTRY = settings.registry.npm;
   }
-  // 将 Node.js 所在目录注入 PATH，确保 npm/npx 等子进程能找到 node
-  // 无论是便携版还是 bundled，都取 getNodeBin() 的目录加入 PATH
+  applyProxySettingsToEnv(env, settings);
+  prependPathEntries(env, getManagedResourcePathEntries());
+  const playwrightBrowsers = path.join(getManagedToolsRoot(), 'playwright', 'browsers');
+  if (fs.existsSync(playwrightBrowsers)) env.PLAYWRIGHT_BROWSERS_PATH = playwrightBrowsers;
+
+  // 将 Node.js 所在目录注入 PATH，确保 npm/npx 等子进程能找到 node。
+  // 用户目录便携版 Node 优先于安装包内置运行时。
   const nodeBin = getNodeBin();
   if (nodeBin && nodeBin !== 'node') {
-    const nodeDir = path.dirname(nodeBin);
-    env.PATH = `${nodeDir}${path.delimiter}${env.PATH || ''}`;
+    prependPathEntries(env, [path.dirname(nodeBin)]);
   }
   return env;
+}
+
+function ensureBundledSkillsInstalled() {
+  const sourceDir = getBundledSkillsRoot();
+  if (!fs.existsSync(sourceDir)) return;
+
+  const targetDir = getGlobalSkillsDir();
+  fs.mkdirSync(targetDir, { recursive: true });
+
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const sourceSkillDir = path.join(sourceDir, entry.name);
+    const targetSkillDir = path.join(targetDir, entry.name);
+    if (fs.existsSync(targetSkillDir)) continue;
+    try {
+      fs.cpSync(sourceSkillDir, targetSkillDir, { recursive: true, force: false });
+      log(`[${APP_NAME}] Installed bundled skill: ${entry.name}`);
+    } catch (err) {
+      console.warn(`[${APP_NAME}] Failed to install bundled skill ${entry.name}:`, err.message || err);
+    }
+  }
+}
+
+function listInstalledSkillSlugs() {
+  const skillsDir = getGlobalSkillsDir();
+  if (!fs.existsSync(skillsDir)) return [];
+  return fs.readdirSync(skillsDir, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name)
+    .filter(slug => slug && !slug.startsWith('.'));
+}
+
+function ensureInstalledSkillsEnabled() {
+  const slugs = listInstalledSkillSlugs();
+  if (slugs.length === 0) return;
+
+  const config = getConfig();
+  const changed = enableSkillEntries(config, slugs);
+  if (changed) {
+    saveConfig(config);
+    log(`[${APP_NAME}] Enabled installed skills: ${slugs.join(', ')}`);
+  }
+
+  syncLegacySkillEntries(slugs);
+}
+
+function enableSkillEntries(config, slugs) {
+  if (!config.skills) config.skills = {};
+  if (!config.skills.entries) config.skills.entries = {};
+
+  let dirty = false;
+  for (const slug of slugs) {
+    const existing = config.skills.entries[slug] || {};
+    if (existing.enabled !== true) {
+      config.skills.entries[slug] = { ...existing, enabled: true };
+      dirty = true;
+    }
+  }
+  return dirty;
+}
+
+function syncLegacySkillEntries(slugs) {
+  const { legacyConfigPath } = resolvePaths();
+  if (!fs.existsSync(legacyConfigPath)) return;
+  try {
+    const legacyConfig = JSON.parse(fs.readFileSync(legacyConfigPath, 'utf8'));
+    if (enableSkillEntries(legacyConfig, slugs)) {
+      fs.writeFileSync(legacyConfigPath, JSON.stringify(legacyConfig, null, 2));
+      log(`[${APP_NAME}] Synced installed skills to ${legacyConfigPath}`);
+    }
+  } catch (err) {
+    console.warn(`[${APP_NAME}] Failed to sync installed skills to legacy config:`, err.message || err);
+  }
 }
 
 function parseVersionTuple(version) {
@@ -264,24 +795,16 @@ function getPortableNodeDir() {
  * 获取打包在 app 中的 Node.js 运行时目录。
  *
  * 路径推导（所有平台通用）：
- *   main.js 位于: <app>/resources/app/electron/main.js
- *   __dirname  = <app>/resources/app/electron/
- *   ../..      = <app>/resources/
- *   extraResources.to=runtime → <app>/resources/runtime/node-{platform}-{arch}/
+ *   extraResources 把 resources 下的内容复制到安装包 resources 根目录
+ *   resources/runtime/nodejs → <app>/resources/runtime/nodejs
  *
- *   macOS DMG:  /Applications/ClawShell.app/Contents/Resources/runtime/node-darwin-arm64/bin/node
- *   Linux deb:  /opt/ClawShell/resources/runtime/node-linux-x64/bin/node
- *   Win NSIS:   C:\...\clawshell\resources\runtime\node-win32-x64\node.exe
- *   Portable:   %TEMP%\...\resources\runtime\node-win32-x64\node.exe
+ *   macOS DMG:  /Applications/ClawShell.app/Contents/Resources/runtime/nodejs/bin/node
+ *   Linux deb:  /opt/ClawShell/resources/runtime/nodejs/bin/node
+ *   Win NSIS:   C:\...\clawshell\resources\runtime\nodejs\node.exe
+ *   Portable:   %TEMP%\...\resources\runtime\nodejs\node.exe
  */
 function getBundledNodeDir() {
-  const platform = process.platform;
-  const arch = process.arch;
-  const suffix = `node-${platform}-${arch}`;
-  if (isDev) {
-    return path.join(__dirname, '..', 'resources', 'runtime', suffix);
-  }
-  return path.join(__dirname, '..', '..', 'runtime', suffix);
+  return path.join(getBundledRuntimeRoot(), 'nodejs');
 }
 
 function getNodeBin() {
@@ -343,7 +866,7 @@ function getNpmBin() {
 // ═══════════════════════════════════════════════════════════════
 
 function ensureConfig() {
-  const { dataDir, configDir, configPath } = resolvePaths();
+  const { dataDir, configDir, configPath, legacyConfigPath } = resolvePaths();
   fs.mkdirSync(dataDir, { recursive: true });
   fs.mkdirSync(configDir, { recursive: true });
   // fs.mkdirSync(path.join(configDir, 'memory'), { recursive: true });
@@ -351,6 +874,10 @@ function ensureConfig() {
   // fs.mkdirSync(path.join(configDir, 'skills'), { recursive: true });
   // fs.mkdirSync(path.join(configDir, 'logs'), { recursive: true });
   fs.mkdirSync(path.join(dataDir, 'core'), { recursive: true });
+  if (!fs.existsSync(configPath) && fs.existsSync(legacyConfigPath)) {
+    fs.copyFileSync(legacyConfigPath, configPath);
+    console.log(`[${APP_NAME}] Migrated config from ${legacyConfigPath} to ${configPath}`);
+  }
   if (!fs.existsSync(configPath)) {
     const defaultConfig = {
       gateway: { mode: 'local', auth: { token: 'clawshell' } },
@@ -377,12 +904,113 @@ function saveConfig(config) {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
 
+const KNOWN_MODEL_METADATA = {
+  deepseek: {
+    'deepseek-v4-flash': {
+      name: 'DeepSeek V4 Flash',
+      reasoning: true,
+      contextWindow: 1000000,
+      maxTokens: 384000,
+      cost: { input: 0.14, output: 0.28, cacheRead: 0.028, cacheWrite: 0 },
+      compat: { supportsUsageInStreaming: true, supportsReasoningEffort: true, maxTokensField: 'max_tokens' },
+    },
+    'deepseek-v4-pro': {
+      name: 'DeepSeek V4 Pro',
+      reasoning: true,
+      contextWindow: 1000000,
+      maxTokens: 384000,
+      cost: { input: 1.74, output: 3.48, cacheRead: 0.145, cacheWrite: 0 },
+      compat: { supportsUsageInStreaming: true, supportsReasoningEffort: true, maxTokensField: 'max_tokens' },
+    },
+    'deepseek-reasoner': {
+      name: 'DeepSeek Reasoner',
+      reasoning: true,
+      contextWindow: 131072,
+      maxTokens: 65536,
+      cost: { input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0 },
+      compat: { supportsUsageInStreaming: true, supportsReasoningEffort: false, maxTokensField: 'max_tokens' },
+    },
+  },
+};
+
+function applyKnownModelMetadata(config) {
+  const providers = config.models?.providers;
+  if (!providers || typeof providers !== 'object') return false;
+
+  let dirty = false;
+  for (const [providerId, providerConfig] of Object.entries(providers)) {
+    const known = KNOWN_MODEL_METADATA[providerId];
+    if (!known || !Array.isArray(providerConfig?.models)) continue;
+    providerConfig.models = providerConfig.models.map(model => {
+      if (!model?.id || !known[model.id]) return model;
+      const patched = { ...model, ...known[model.id], id: model.id };
+      if (JSON.stringify(patched) !== JSON.stringify(model)) dirty = true;
+      return patched;
+    });
+  }
+  return dirty;
+}
+
+function ensureKnownModelMetadata() {
+  const config = getConfig();
+  if (applyKnownModelMetadata(config)) {
+    saveConfig(config);
+    log(`[${APP_NAME}] Applied known model metadata`);
+  }
+}
+
+function saveModelConfigToDisk({ provider, baseUrl, modelId, apiKey, providerModels, apiType }) {
+  if (!provider || !modelId) {
+    return { ok: false, error: 'Missing provider or model id' };
+  }
+  if (!Array.isArray(providerModels) || providerModels.length === 0) {
+    return { ok: false, error: 'Model list is required. Fetch provider models before saving.' };
+  }
+
+  const cfg = getConfig();
+  if (!cfg.models) cfg.models = {};
+  cfg.models.mode = 'merge';
+  if (!cfg.models.providers) cfg.models.providers = {};
+  cfg.models.providers[provider] = {
+    baseUrl: baseUrl || '',
+    apiKey: apiKey || '',
+    api: apiType || 'openai-completions',
+    models: providerModels,
+  };
+  applyKnownModelMetadata(cfg);
+
+  if (provider === 'zai') {
+    if (!cfg.env) cfg.env = {};
+    cfg.env.ZAI_API_KEY = apiKey || '';
+  }
+  if (!cfg.agents) cfg.agents = {};
+  if (!cfg.agents.defaults) cfg.agents.defaults = {};
+  if (!cfg.agents.defaults.model) cfg.agents.defaults.model = {};
+  if (!cfg.agents.defaults.model.primary) cfg.agents.defaults.model.primary = `${provider}/${modelId}`;
+
+  saveConfig(cfg);
+
+  const { configPath } = resolvePaths();
+  const saved = getConfig();
+  const verified = Array.isArray(saved.models?.providers?.[provider]?.models)
+    && saved.models.providers[provider].models.length > 0;
+  if (!verified) {
+    return { ok: false, error: `Model config was not written to ${configPath}` };
+  }
+
+  return { ok: true, configPath };
+}
+
 function getSettings() {
   if (settingsCache) return settingsCache;
   const defaults = {
     connection: { mode: 'local', remote: { url: '', token: '', password: '' } },
     core: { version: '', autoUpdate: false },
-    registry: { npm: 'https://registry.npmmirror.com' },
+    registry: {
+      npm: 'https://registry.npmmirror.com',
+      proxy: { http: '', https: '' },
+      githubProxy: '',
+    },
     setupDone: false,
   };
   // Temporarily set cache to defaults to break circular dependency:
@@ -403,6 +1031,459 @@ function saveSettings(settings) {
   const { settingsPath } = resolvePaths();
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+}
+
+function emitImmersiveVoice(sessionId, event, payload = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('immersive-voice-event', { sessionId, ...payload, event });
+}
+
+function immersiveLog(...args) {
+  console.log('[immersive-voice]', ...args);
+}
+
+function immersiveWarn(...args) {
+  console.warn('[immersive-voice]', ...args);
+}
+
+function getDashScopeApiKey(options = {}) {
+  return options.apiKey || getSettings().voice?.dashscopeApiKey || process.env.DASHSCOPE_API_KEY || '';
+}
+
+function createDashScopeSocket({ apiKey, sessionId, kind, url, headers = {}, meta = {} }) {
+  const key = apiKey || getDashScopeApiKey();
+  if (!key) throw new Error('Missing DashScope API KEY');
+  immersiveLog(`${kind} websocket create`, { sessionId, url, headers: Object.keys(headers), hasApiKey: !!key });
+  const ws = new WebSocket(url, {
+    headers: {
+      Authorization: `Bearer ${key}`,
+      ...headers,
+    },
+  });
+  immersiveVoiceSessions.set(sessionId, { kind, ws, chunks: [], finishTimer: null, ...meta });
+  ws.on('error', err => {
+    immersiveWarn(`${kind} websocket error`, { sessionId, error: err.message || String(err) });
+    emitImmersiveVoice(sessionId, `${kind}:error`, { error: err.message || String(err) });
+  });
+  ws.on('close', (code, reason) => {
+    const reasonText = reason?.toString?.() || '';
+    immersiveLog(`${kind} websocket closed`, { sessionId, code, reason: reasonText });
+    if (code && code !== 1000 && code !== 1005) {
+      emitImmersiveVoice(sessionId, `${kind}:error`, { error: reasonText || `WebSocket closed: ${code}` });
+    }
+    emitImmersiveVoice(sessionId, `${kind}:closed`, { code, reason: reasonText });
+    immersiveVoiceSessions.delete(sessionId);
+  });
+  return ws;
+}
+
+function dashScopeHeader(action, taskId, streaming = 'duplex') {
+  return {
+    header: {
+      action,
+      task_id: taskId,
+      streaming,
+    },
+  };
+}
+
+function dashScopeFinishTask(taskId) {
+  return {
+    ...dashScopeHeader('finish-task', taskId, 'duplex'),
+    payload: {
+      input: {},
+    },
+  };
+}
+
+function realtimeEvent(type, extra = {}) {
+  return {
+    event_id: `event_${randomUUID()}`,
+    type,
+    ...extra,
+  };
+}
+
+function parseAsrMessage(raw) {
+  let data = raw;
+  if (Buffer.isBuffer(raw)) data = raw.toString('utf8');
+  if (raw instanceof ArrayBuffer) data = Buffer.from(raw).toString('utf8');
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch { return null; }
+  }
+  const event = String(data?.type || '').toLowerCase();
+  if (!event) return null;
+  if (event === 'conversation.item.input_audio_transcription.text') {
+    const text = `${data?.text || ''}${data?.stash || ''}`.trim();
+    return {
+      event,
+      text,
+      isSentenceEnd: false,
+      rawEvent: event,
+      raw: data,
+    };
+  }
+  if (event === 'conversation.item.input_audio_transcription.completed') {
+    const transcript = String(data?.transcript || '').trim();
+    const emotion = String(data?.emotion || '').trim();
+    return {
+      event,
+      text: transcript,
+      transcript,
+      emotion,
+      isSentenceEnd: true,
+      rawEvent: event,
+      raw: data,
+    };
+  }
+  if (event === 'conversation.item.input_audio_transcription.failed' || event === 'error') {
+    const error = data?.error?.message || data?.error || data?.message || 'ASR error';
+    return {
+      event,
+      error: String(error),
+      isSentenceEnd: false,
+      rawEvent: event,
+      raw: data,
+    };
+  }
+  return {
+    event,
+    isSentenceEnd: false,
+    rawEvent: event,
+    raw: data,
+  };
+}
+
+function countChineseChars(text) {
+  return (String(text || '').match(/[\u3400-\u9fff]/g) || []).length;
+}
+
+function summarizeAsrRaw(raw) {
+  try {
+    const text = Buffer.isBuffer(raw)
+      ? raw.toString('utf8')
+      : raw instanceof ArrayBuffer
+        ? Buffer.from(raw).toString('utf8')
+        : String(raw || '');
+    const parsed = JSON.parse(text);
+    return {
+      type: parsed?.type || parsed?.event || parsed?.header?.event,
+      text: parsed?.text,
+      stash: parsed?.stash,
+      transcript: parsed?.transcript,
+      emotion: parsed?.emotion,
+      error: parsed?.error?.message || parsed?.error,
+      raw: text.slice(0, 500),
+    };
+  } catch (err) {
+    return {
+      binary: Buffer.isBuffer(raw),
+      bytes: Buffer.isBuffer(raw) ? raw.length : undefined,
+      parseError: err.message,
+    };
+  }
+}
+
+function parseTtsMessage(raw) {
+  if (Buffer.isBuffer(raw)) {
+    const text = raw.toString('utf8');
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      return { event: '', audioBase64: raw.toString('base64'), done: false, failed: false, started: false };
+    }
+  }
+  let data = raw;
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch { return null; }
+  }
+  const event = String(data?.header?.event || data?.event || data?.type || '').toLowerCase();
+  const audio = data?.payload?.output?.audio || data?.output?.audio || data?.audio;
+  const base64 = audio?.data || audio;
+  const started = event.includes('task-started') || event.includes('task_started');
+  const done = event.includes('task-finished') || event.includes('task_finished');
+  const failed = event.includes('task-failed') || event.includes('task_failed') || event === 'error';
+  const error = data?.header?.error_message || data?.payload?.message || data?.error?.message || data?.error || '';
+  return {
+    event,
+    audioBase64: typeof base64 === 'string' ? base64 : '',
+    done,
+    failed,
+    started,
+    error: error ? String(error) : '',
+    raw: data,
+  };
+}
+
+function startDashScopeAsr(options = {}) {
+  const sessionId = options.sessionId || randomUUID();
+  const model = options.model || 'qwen3-asr-flash-realtime';
+  const url = `${options.url || 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'}?model=${encodeURIComponent(model)}`;
+  immersiveLog('ASR start requested', { sessionId, model, sampleRate: options.sampleRate || 16000, hasApiKey: !!options.apiKey });
+  const ws = createDashScopeSocket({
+    apiKey: options.apiKey,
+    sessionId,
+    kind: 'asr',
+    url,
+    headers: {
+      'OpenAI-Beta': 'realtime=v1',
+    },
+    meta: { protocol: 'realtime' },
+  });
+  ws.on('open', () => {
+    immersiveLog('ASR websocket open', { sessionId });
+    ws.send(JSON.stringify(realtimeEvent('session.update', {
+      session: {
+        modalities: ['text'],
+        input_audio_format: 'pcm',
+        sample_rate: options.sampleRate || 16000,
+        input_audio_transcription: {
+          language: options.language || 'zh',
+        },
+        turn_detection: {
+          type: 'server_vad',
+          threshold: options.vadThreshold ?? 0.5,
+          silence_duration_ms: options.silenceDurationMs || 1800,
+        },
+      },
+    })));
+    immersiveLog('ASR session.update sent', { sessionId });
+    emitImmersiveVoice(sessionId, 'asr:ready');
+  });
+  ws.on('message', raw => {
+    const parsed = parseAsrMessage(raw);
+    immersiveLog('ASR message', {
+      sessionId,
+      event: parsed?.event,
+      text: parsed?.text,
+      emotion: parsed?.emotion,
+      isSentenceEnd: parsed?.isSentenceEnd,
+      summary: summarizeAsrRaw(raw),
+    });
+    if (!parsed) return;
+    if (parsed.event === 'input_audio_buffer.speech_started') {
+      emitImmersiveVoice(sessionId, 'asr:speech-started', parsed);
+      return;
+    }
+    if (parsed.event === 'input_audio_buffer.speech_stopped') {
+      emitImmersiveVoice(sessionId, 'asr:speech-stopped', parsed);
+      return;
+    }
+    if (parsed.event === 'conversation.item.input_audio_transcription.text' && parsed.text) {
+      emitImmersiveVoice(sessionId, 'asr:transcript', parsed);
+      return;
+    }
+    if (parsed.event === 'conversation.item.input_audio_transcription.completed') {
+      if (countChineseChars(parsed.text || parsed.transcript) <= 2) {
+        immersiveLog('ASR transcript ignored as noise', {
+          sessionId,
+          text: parsed.text,
+          chineseChars: countChineseChars(parsed.text || parsed.transcript),
+        });
+        emitImmersiveVoice(sessionId, 'asr:noise-filtered', parsed);
+        return;
+      }
+      emitImmersiveVoice(sessionId, 'asr:sentence-end', parsed);
+      return;
+    }
+    if (parsed.event === 'conversation.item.input_audio_transcription.failed' || parsed.event === 'error') {
+      emitImmersiveVoice(sessionId, 'asr:error', parsed);
+    }
+  });
+  return { ok: true, sessionId };
+}
+
+function startDashScopeTts(options = {}) {
+  const sessionId = options.sessionId || randomUUID();
+  const taskId = randomUUID();
+  immersiveLog('TTS start requested', { sessionId, taskId, model: options.model || 'cosyvoice-v3-flash', voice: options.voice || 'longanhuan_v3', textLength: String(options.text || '').length });
+  const ws = createDashScopeSocket({
+    apiKey: options.apiKey,
+    sessionId,
+    kind: 'tts',
+    url: options.url || 'wss://dashscope.aliyuncs.com/api-ws/v1/inference',
+    headers: {
+      'X-DashScope-DataInspection': 'enable',
+    },
+    meta: { taskId, text: options.text || '', taskStarted: false },
+  });
+  ws.on('open', () => {
+    immersiveLog('TTS websocket open', { sessionId, taskId });
+    const message = {
+      ...dashScopeHeader('run-task', taskId, 'duplex'),
+      payload: {
+        task_group: 'audio',
+        task: 'tts',
+        function: 'SpeechSynthesizer',
+        model: options.model || 'cosyvoice-v3-flash',
+        parameters: {
+          voice: options.voice || 'longanhuan_v3',
+          format: options.format || 'mp3',
+          sample_rate: options.sampleRate || 24000,
+          text_type: 'PlainText',
+          volume: 50,
+          rate: 1,
+          pitch: 1,
+        },
+        input: {},
+      },
+    };
+    ws.send(JSON.stringify(message));
+    immersiveLog('TTS run-task sent', { sessionId, taskId });
+    emitImmersiveVoice(sessionId, 'tts:ready');
+  });
+  ws.on('message', raw => {
+    const parsed = parseTtsMessage(raw);
+    immersiveLog('TTS message', {
+      sessionId,
+      event: parsed?.event,
+      hasAudio: !!parsed?.audioBase64,
+      done: !!parsed?.done,
+      failed: !!parsed?.failed,
+      binary: Buffer.isBuffer(raw),
+    });
+    if (!parsed) return;
+    if (parsed.started) {
+      const session = immersiveVoiceSessions.get(sessionId);
+      if (session && !session.taskStarted) {
+        session.taskStarted = true;
+        immersiveLog('TTS continue-task sent', { sessionId, taskId, textLength: String(session.text || '').length });
+        ws.send(JSON.stringify({
+          ...dashScopeHeader('continue-task', taskId, 'duplex'),
+          payload: {
+            input: {
+              text: session.text,
+            },
+          },
+        }));
+        session.finishTimer = setTimeout(() => {
+          const current = immersiveVoiceSessions.get(sessionId);
+          if (!current || current.ws !== ws) return;
+          immersiveLog('TTS finish-task sent', { sessionId, taskId });
+          ws.send(JSON.stringify(dashScopeFinishTask(taskId)));
+          current.finishTimer = null;
+        }, 300);
+      }
+    }
+    if (parsed.failed) {
+      immersiveWarn('TTS task failed', { sessionId, event: parsed.event, error: parsed.error });
+      emitImmersiveVoice(sessionId, 'tts:error', { error: parsed.error || 'TTS task failed' });
+      try { ws.close(); } catch {}
+      return;
+    }
+    if (parsed.audioBase64) emitImmersiveVoice(sessionId, 'tts:audio', { audioBase64: parsed.audioBase64, mimeType: 'audio/mpeg' });
+    if (parsed.done) {
+      emitImmersiveVoice(sessionId, 'tts:done');
+      try { ws.close(); } catch {}
+    }
+  });
+  return { ok: true, sessionId };
+}
+
+function stopImmersiveVoiceSession(sessionId, finish = true) {
+  const session = immersiveVoiceSessions.get(sessionId);
+  if (!session) return { ok: true };
+  try {
+    if (session.finishTimer) {
+      clearTimeout(session.finishTimer);
+      session.finishTimer = null;
+    }
+    if (finish && session.ws?.readyState === WebSocket.OPEN) {
+      if (session.protocol === 'realtime') {
+        session.ws.send(JSON.stringify(realtimeEvent('session.finish')));
+      } else if (session.taskId) {
+        session.ws.send(JSON.stringify(dashScopeFinishTask(session.taskId)));
+      }
+    }
+    session.ws?.close?.();
+  } catch {}
+  immersiveVoiceSessions.delete(sessionId);
+  return { ok: true };
+}
+
+async function fetchText(url, options = {}) {
+  const response = await requestBuffer(url, {
+    timeout: options.timeout || 15000,
+    headers: options.headers || {},
+    maxBytes: options.maxBytes || 0,
+    maxBytesError: options.maxBytesError,
+  });
+  const text = response.buffer.toString('utf8');
+  if (response.statusCode >= 400) throw new Error(`HTTP ${response.statusCode}: ${text.slice(0, 300)}`);
+  return text;
+}
+
+async function fetchBuffer(url, options = {}) {
+  const response = await requestBuffer(url, {
+    timeout: options.timeout || 15000,
+    headers: options.headers || {},
+    maxBytes: options.maxBytes || 5 * 1024 * 1024,
+    maxBytesError: options.maxBytesError || 'Audio sample is too large',
+  });
+  if (response.statusCode >= 400) throw new Error(`HTTP ${response.statusCode}`);
+  return {
+    buffer: response.buffer,
+    contentType: response.headers['content-type'] || '',
+  };
+}
+
+function decodeHtml(text = '') {
+  return String(text)
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function parseCosyVoiceList(html) {
+  const rows = html.match(/<tr[\s\S]*?<\/tr>/g) || [];
+  const voices = [];
+  for (const row of rows) {
+    const audio = row.match(/<audio[\s\S]*?data-src=\\?"([^"\\]+)\\?"/)?.[1]
+      || row.match(/<audio[\s\S]*?src=\\?"([^"\\]+)\\?"/)?.[1]
+      || '';
+    const text = decodeHtml(row
+      .replace(/<span class=\\?"help-letter-space\\?"><\\?\/span>/g, '')
+      .replace(/<[^>]*>/g, '')
+      .replace(/\\"/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim());
+    const name = text.match(/名称：(.+?)voice参数：/)?.[1];
+    const id = text.match(/voice参数：([a-zA-Z0-9_]+)/)?.[1];
+    const trait = text.match(/特质：(.+?)年龄：/)?.[1] || '';
+    const age = text.match(/年龄：(.+?)语言：/)?.[1] || '';
+    const language = text.match(/语言：(.+?)(?:SSML|$)/)?.[1] || '';
+    if (!name || !id || !id.endsWith('_v3')) continue;
+    voices.push({
+      id,
+      name,
+      trait,
+      age,
+      language,
+      desc: [trait, age].filter(Boolean).join(' · '),
+      sampleUrl: decodeHtml(audio),
+    });
+  }
+  const seen = new Set();
+  return voices.filter(voice => {
+    if (seen.has(voice.id)) return false;
+    seen.add(voice.id);
+    return true;
+  });
+}
+
+async function getCosyVoiceList() {
+  const now = Date.now();
+  if (cosyVoiceListCache && now - cosyVoiceListCacheAt < 24 * 60 * 60 * 1000) {
+    return cosyVoiceListCache;
+  }
+  const html = await fetchText('https://help.aliyun.com/zh/model-studio/cosyvoice-voice-list');
+  const voices = parseCosyVoiceList(html);
+  if (voices.length === 0) throw new Error('No CosyVoice voices parsed');
+  cosyVoiceListCache = voices;
+  cosyVoiceListCacheAt = now;
+  return voices;
 }
 
 function hasModelConfigured() {
@@ -458,6 +1539,8 @@ function startGateway(port) {
     console.log(`[${APP_NAME}] Using Node.js: ${nodeBin}`);
     console.log(`[${APP_NAME}] Using OpenClaw: ${openclawPath}`);
 
+    ensureKnownModelMetadata();
+    ensureInstalledSkillsEnabled();
     const env = getOpenClawEnv();
 
     gatewayProcess = spawn(nodeBin, [
@@ -728,26 +1811,17 @@ function getRemoteUrl(settings) {
   return url.replace(/\/+$/, '');
 }
 
-function probeRemoteGateway(settings) {
-  return new Promise((resolve) => {
-    const url = getRemoteUrl(settings);
-    if (!url) {
-      resolve({ ok: false, error: 'No remote URL configured' });
-      return;
-    }
-    const parsed = new URL(url);
-    const client = parsed.protocol === 'https:' ? https : http;
-    const req = client.get(url, (res) => {
-      resolve({ ok: true, statusCode: res.statusCode });
-    });
-    req.setTimeout(10000, () => {
-      req.destroy();
-      resolve({ ok: false, error: 'Connection timeout' });
-    });
-    req.on('error', (err) => {
-      resolve({ ok: false, error: err.message });
-    });
-  });
+async function probeRemoteGateway(settings) {
+  const url = getRemoteUrl(settings);
+  if (!url) return { ok: false, error: 'No remote URL configured' };
+  try {
+    const { req, res } = await openHttpResponse(url, { timeout: 10000 });
+    res.resume();
+    req.destroy();
+    return { ok: true, statusCode: res.statusCode };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
 }
 
 async function connectRemoteGateway(settings) {
@@ -826,19 +1900,10 @@ function listInstalledCoreVersions() {
 // 9. SkillHub API 代理
 // ═══════════════════════════════════════════════════════════════
 
-function fetchFromSkillHub(apiPath) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(apiPath, 'https://api.skillhub.cn');
-    const req = https.get(url.toString(), (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON from SkillHub')); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('SkillHub request timeout')); });
-  });
+async function fetchFromSkillHub(apiPath) {
+  const url = new URL(apiPath, 'https://api.skillhub.cn');
+  const data = await fetchText(url.toString(), { timeout: 10000 });
+  try { return JSON.parse(data); } catch { throw new Error('Invalid JSON from SkillHub'); }
 }
 
 // const SKILL_API_HOST = 'http://localhost:8001';
@@ -846,47 +1911,54 @@ const SKILL_API_HOST = 'http://124.221.154.36';
 // SKILL_API_URL = ""
 SKILL_API_URL = "/api/clawshell"
 
-function fetchFromSkillApi(apiPath) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(SKILL_API_URL + apiPath, SKILL_API_HOST);
-    const client = url.protocol === 'https:' ? https : http;
-    const req = client.get(url.toString(), (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        if (res.statusCode >= 400) {
-          return reject(new Error(`Skill API ${res.statusCode}: ${data.slice(0, 200)}`));
-        }
-        try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON from Skill API')); }
-      });
+async function fetchFromSkillApi(apiPath) {
+  const url = new URL(SKILL_API_URL + apiPath, SKILL_API_HOST);
+  const data = await fetchText(url.toString(), { timeout: 10000 });
+  try { return JSON.parse(data); } catch { throw new Error('Invalid JSON from Skill API'); }
+}
+
+async function downloadToFileResolved(downloadUrl, destPath, redirects = 5) {
+  const { req, res } = await openHttpResponse(downloadUrl, { timeout: 30000 });
+  if (isRedirectResponse(res)) {
+    if (redirects <= 0) {
+      res.resume();
+      req.destroy();
+      throw new Error('Too many redirects');
+    }
+    const nextUrl = applyGithubProxyUrl(new URL(res.headers.location, downloadUrl).toString());
+    res.resume();
+    req.destroy();
+    return downloadToFileResolved(nextUrl, destPath, redirects - 1);
+  }
+  if (res.statusCode !== 200) {
+    const body = await readResponseBuffer(res, { maxBytes: 1024, maxBytesError: 'Download error is too large' }).catch(() => Buffer.alloc(0));
+    throw new Error(`Download failed: HTTP ${res.statusCode}${body.length ? `: ${body.toString('utf8').slice(0, 200)}` : ''}`);
+  }
+
+  await new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(destPath);
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      try { file.close(); } catch {}
+      try { fs.unlinkSync(destPath); } catch {}
+      reject(err);
+    };
+    res.on('error', fail);
+    file.on('error', fail);
+    file.on('finish', () => {
+      if (settled) return;
+      settled = true;
+      file.close(resolve);
     });
-    req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('Skill API request timeout')); });
+    res.pipe(file);
   });
 }
 
 function downloadToFile(url, destPath) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destPath);
-    https.get(url, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        file.close();
-        fs.unlinkSync(destPath);
-        return downloadToFile(res.headers.location, destPath).then(resolve, reject);
-      }
-      if (res.statusCode !== 200) {
-        file.close();
-        fs.unlinkSync(destPath);
-        return reject(new Error(`Download failed: HTTP ${res.statusCode}`));
-      }
-      res.pipe(file);
-      file.on('finish', () => { file.close(); resolve(); });
-    }).on('error', (err) => {
-      file.close();
-      fs.unlinkSync(destPath);
-      reject(err);
-    });
-  });
+  const downloadUrl = applyGithubProxyUrl(url);
+  return downloadToFileResolved(downloadUrl, destPath);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -956,27 +2028,27 @@ async function checkNodeEnvironment() {
     }
   }
 
-  // 3. 检查系统 PATH
-  const sysVersion = await queryNodeVersion('node');
-  log(`[${APP_NAME}] [3] system node → version=${sysVersion}`);
-  if (sysVersion) {
-    const major = parseInt(sysVersion.split('.')[0], 10);
-    return { found: true, path: 'node', version: sysVersion, meetsMinimum: major >= NODE_MINIMUM_VERSION, source: 'system' };
-  }
-
-  // 4. 检查打包在 app 中的运行时（resources/runtime/node-{platform}-{arch}/）
+  // 3. 检查打包在 app 中的运行时（resources/runtime/nodejs/）
   const bundledDir = getBundledNodeDir();
   const bundledPath = process.platform === 'win32'
     ? path.join(bundledDir, 'node.exe')
     : path.join(bundledDir, 'bin', 'node');
-  log(`[${APP_NAME}] [4] bundled: ${bundledPath} → ${fs.existsSync(bundledPath)}`);
+  log(`[${APP_NAME}] [3] bundled: ${bundledPath} → ${fs.existsSync(bundledPath)}`);
   if (fs.existsSync(bundledPath)) {
     const version = await queryNodeVersion(bundledPath);
     if (version) {
       const major = parseInt(version.split('.')[0], 10);
-      log(`[${APP_NAME}] [4] found v${version}, meetsMinimum=${major >= NODE_MINIMUM_VERSION}`);
+      log(`[${APP_NAME}] [3] found v${version}, meetsMinimum=${major >= NODE_MINIMUM_VERSION}`);
       return { found: true, path: bundledPath, version, meetsMinimum: major >= NODE_MINIMUM_VERSION, source: 'bundled' };
     }
+  }
+
+  // 4. 检查系统 PATH
+  const sysVersion = await queryNodeVersion('node');
+  log(`[${APP_NAME}] [4] system node → version=${sysVersion}`);
+  if (sysVersion) {
+    const major = parseInt(sysVersion.split('.')[0], 10);
+    return { found: true, path: 'node', version: sysVersion, meetsMinimum: major >= NODE_MINIMUM_VERSION, source: 'system' };
   }
 
   log(`[${APP_NAME}] No Node.js found in any location`);
@@ -994,22 +2066,10 @@ async function getLatestNodeLTSVersion() {
   ];
   for (const src of sources) {
     try {
-      const version = await new Promise((resolve, reject) => {
-        const client = src.startsWith('https') ? https : http;
-        const req = client.get(src, { timeout: 10000 }, (res) => {
-          let data = '';
-          res.on('data', chunk => data += chunk);
-          res.on('end', () => {
-            try {
-              const versions = JSON.parse(data);
-              const lts = versions.find(v => v.lts !== false && v.lts !== '');
-              resolve(lts ? lts.version.replace(/^v/, '') : null);
-            } catch { resolve(null); }
-          });
-        });
-        req.on('error', reject);
-        req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
-      });
+      const data = await fetchText(src, { timeout: 10000 });
+      const versions = JSON.parse(data);
+      const lts = versions.find(v => v.lts !== false && v.lts !== '');
+      const version = lts ? lts.version.replace(/^v/, '') : null;
       if (version) return version;
     } catch { /* try next source */ }
   }
@@ -1144,6 +2204,485 @@ async function installPortableNode() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 9c. 可选工具包管理
+// ═══════════════════════════════════════════════════════════════
+
+const TOOL_PACKAGES = [
+  {
+    id: 'nodejs',
+    name: 'Node.js',
+    icon: 'nodejs',
+    builtin: true,
+    required: true,
+    size: '80-130 MB',
+    homepage: 'https://nodejs.org/',
+    description: 'JavaScript 运行时，OpenClaw 本地模式和 npm 工具链的基础环境。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'nodejs',
+  },
+  {
+    id: 'python',
+    name: 'Python',
+    icon: 'python',
+    builtin: true,
+    required: true,
+    size: '50-120 MB',
+    homepage: 'https://www.python.org/',
+    description: 'Python 运行环境，用于脚本、文档处理、数据处理和部分 AI 工具。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'python',
+  },
+  {
+    id: 'portablegit',
+    name: 'PortableGit',
+    icon: 'portablegit',
+    size: '55-80 MB',
+    homepage: 'https://git-scm.com/download/win',
+    description: 'Git、ssh、bash 等常用开发命令。Git for Windows 仅支持 Windows。',
+    platforms: ['win32'],
+    install: 'manual-github-asset',
+    github: { owner: 'git-for-windows', repo: 'git', include: ['PortableGit-', '64-bit.7z.exe'] },
+    manual: true,
+  },
+  {
+    id: 'pandoc',
+    name: 'Pandoc',
+    icon: 'pandoc',
+    size: '35-180 MB',
+    homepage: 'https://pandoc.org/installing.html',
+    description: '通用文档转换工具，适合 Markdown、HTML、docx、LaTeX 等格式互转。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'github-asset',
+    github: { owner: 'jgm', repo: 'pandoc' },
+  },
+  {
+    id: 'ffmpeg',
+    name: 'FFmpeg',
+    icon: 'ffmpeg',
+    size: '80-180 MB',
+    homepage: 'https://ffmpeg.org/download.html',
+    description: '音视频转码、剪辑、抽帧、合并和媒体信息处理工具。',
+    platforms: ['win32', 'linux'],
+    install: 'github-asset',
+    github: { owner: 'BtbN', repo: 'FFmpeg-Builds' },
+  },
+  {
+    id: 'playwright',
+    name: 'Playwright',
+    icon: 'playwright',
+    size: '250-700 MB',
+    homepage: 'https://playwright.dev/',
+    description: '浏览器自动化工具，安装后提供 playwright CLI 和浏览器缓存。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'npm-playwright',
+  },
+  {
+    id: 'chrome',
+    name: 'Google Chrome',
+    icon: 'chrome',
+    size: '150-300 MB',
+    homepage: 'https://googlechromelabs.github.io/chrome-for-testing/',
+    description: 'Chrome for Testing 便携构建，适合浏览器自动化和网页调试。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'chrome-for-testing',
+  },
+  {
+    id: 'imagemagick',
+    name: 'ImageMagick',
+    icon: 'imagemagick',
+    size: '35-80 MB',
+    homepage: 'https://imagemagick.org/script/download.php',
+    description: '图片格式转换、缩放、裁剪、合成和批处理工具。',
+    platforms: ['win32'],
+    install: 'imagemagick-portable',
+  },
+  {
+    id: 'winget',
+    name: 'winget',
+    icon: 'winget',
+    size: '25-60 MB',
+    homepage: 'https://github.com/microsoft/winget-cli',
+    description: 'Windows 官方包管理器。通常随系统提供，缺失时打开 Microsoft 安装包。',
+    platforms: ['win32'],
+    install: 'manual-github-asset',
+    github: { owner: 'microsoft', repo: 'winget-cli', include: ['.msixbundle'] },
+    manual: true,
+  },
+  {
+    id: 'ripgrep',
+    name: 'ripgrep',
+    icon: 'ripgrep',
+    size: '5-15 MB',
+    homepage: 'https://github.com/BurntSushi/ripgrep',
+    description: '高速全文搜索工具，比 grep 更适合大型工作区检索。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'github-asset',
+    github: { owner: 'BurntSushi', repo: 'ripgrep' },
+  },
+  {
+    id: 'jq',
+    name: 'jq',
+    icon: 'jq',
+    size: '2-8 MB',
+    homepage: 'https://jqlang.github.io/jq/',
+    description: 'JSON 查询、格式化和转换命令行工具。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'github-asset',
+    github: { owner: 'jqlang', repo: 'jq' },
+  },
+  {
+    id: 'uv',
+    name: 'uv',
+    icon: 'uv',
+    size: '15-35 MB',
+    homepage: 'https://github.com/astral-sh/uv',
+    description: '高速 Python 包管理和脚本运行工具，适合安装 Python CLI 依赖。',
+    platforms: ['win32', 'darwin', 'linux'],
+    install: 'github-asset',
+    github: { owner: 'astral-sh', repo: 'uv' },
+  },
+];
+
+function getToolPackage(id) {
+  return TOOL_PACKAGES.find(tool => tool.id === id) || null;
+}
+
+function getToolInstallDir(tool) {
+  if (tool.id === 'nodejs') return path.join(getBundledRuntimeRoot(), 'nodejs');
+  if (tool.id === 'python') return path.join(getBundledRuntimeRoot(), 'python');
+  return path.join(getManagedToolsRoot(), tool.id);
+}
+
+function getToolInstalledMeta(tool) {
+  const installDir = getToolInstallDir(tool);
+  const exists = fs.existsSync(installDir);
+  let sizeBytes = 0;
+  if (exists) {
+    const stack = [installDir];
+    while (stack.length) {
+      const current = stack.pop();
+      try {
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+          const full = path.join(current, entry.name);
+          if (entry.isDirectory()) stack.push(full);
+          else if (entry.isFile()) sizeBytes += fs.statSync(full).size;
+        }
+      } catch {}
+    }
+  }
+  return { installed: exists, installDir, sizeBytes };
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  return `${value.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+function normalizeToolForRenderer(tool) {
+  const meta = getToolInstalledMeta(tool);
+  const supported = tool.platforms.includes(process.platform);
+  return {
+    id: tool.id,
+    name: tool.name,
+    icon: tool.icon,
+    builtin: !!tool.builtin,
+    required: !!tool.required,
+    manual: !!tool.manual,
+    supported,
+    installed: meta.installed,
+    path: meta.installed ? meta.installDir : '',
+    installedSize: formatBytes(meta.sizeBytes),
+    size: tool.size,
+    homepage: tool.homepage,
+    description: tool.description,
+  };
+}
+
+function sendToolProgress(id, percent, phase) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('tool-package-progress', { id, percent, phase });
+  }
+}
+
+function mapArchForDownloads() {
+  if (process.arch === 'arm64') return 'arm64';
+  if (process.arch === 'ia32') return 'x86';
+  return 'x64';
+}
+
+async function fetchJson(url) {
+  const text = await fetchText(url);
+  return JSON.parse(text);
+}
+
+async function getLatestGithubAsset(owner, repo, predicate) {
+  const release = await fetchJson(`https://api.github.com/repos/${owner}/${repo}/releases/latest`);
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  const asset = assets.find(predicate);
+  if (!asset?.browser_download_url) {
+    throw new Error(`No matching asset found for ${owner}/${repo}`);
+  }
+  return { name: asset.name, url: asset.browser_download_url, size: asset.size || 0 };
+}
+
+function githubAssetPredicate(tool) {
+  const arch = mapArchForDownloads();
+  const platform = process.platform;
+  return (asset) => {
+    const name = String(asset.name || '');
+    const lower = name.toLowerCase();
+    if (tool.github?.include?.some(part => !name.includes(part))) return false;
+    if (tool.id === 'pandoc') {
+      if (platform === 'win32') return lower.endsWith('.zip') && lower.includes('windows') && lower.includes('x86_64');
+      if (platform === 'darwin') return lower.endsWith('.zip') && lower.includes('macos') && (arch === 'arm64' ? lower.includes('arm64') : lower.includes('x86_64'));
+      return lower.endsWith('.tar.gz') && lower.includes('linux') && lower.includes('amd64');
+    }
+    if (tool.id === 'ffmpeg') {
+      if (platform === 'win32') return lower.endsWith('.zip') && lower.includes('win64') && lower.includes('gpl') && !lower.includes('shared');
+      if (platform === 'linux') return lower.endsWith('.tar.xz') && lower.includes('linux64') && lower.includes('gpl') && !lower.includes('shared');
+      return false;
+    }
+    if (tool.id === 'ripgrep') {
+      if (platform === 'win32') return lower.endsWith('.zip') && lower.includes('x86_64-pc-windows-msvc');
+      if (platform === 'darwin') return lower.endsWith('.tar.gz') && lower.includes('apple-darwin');
+      return lower.endsWith('.tar.gz') && lower.includes('x86_64-unknown-linux-musl');
+    }
+    if (tool.id === 'jq') {
+      if (platform === 'win32') return lower.endsWith('.exe') && lower.includes('windows-amd64');
+      if (platform === 'darwin') return lower.includes('macos') && (arch === 'arm64' ? lower.includes('arm64') : lower.includes('amd64'));
+      return lower.includes('linux-amd64') && !lower.endsWith('.asc');
+    }
+    if (tool.id === 'uv') {
+      if (platform === 'win32') return lower.endsWith('.zip') && lower.includes('x86_64-pc-windows-msvc');
+      if (platform === 'darwin') return lower.endsWith('.tar.gz') && lower.includes(arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin');
+      return lower.endsWith('.tar.gz') && lower.includes('x86_64-unknown-linux-gnu');
+    }
+    return true;
+  };
+}
+
+async function extractArchive(archivePath, destDir) {
+  const lower = archivePath.toLowerCase();
+  fs.rmSync(destDir, { recursive: true, force: true });
+  fs.mkdirSync(destDir, { recursive: true });
+  const tmpDir = path.join(os.tmpdir(), `clawshell-tool-extract-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  try {
+    if (lower.endsWith('.zip')) {
+      const zip = new AdmZip(archivePath);
+      zip.extractAllTo(tmpDir, true);
+    } else if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz') || lower.endsWith('.tar.xz')) {
+      await new Promise((resolve, reject) => {
+        const tar = spawn('tar', ['-xf', archivePath, '-C', tmpDir], { stdio: 'pipe' });
+        tar.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`tar exited with code ${code}`)));
+        tar.on('error', reject);
+      });
+    } else if (lower.endsWith('.7z')) {
+      await new Promise((resolve, reject) => {
+        const tar = spawn('tar', ['-xf', archivePath, '-C', tmpDir], { stdio: 'pipe' });
+        tar.on('exit', (code) => code === 0 ? resolve() : reject(new Error('系统 tar 不支持解压 .7z，请安装 7-Zip 后重试')));
+        tar.on('error', reject);
+      });
+    } else {
+      throw new Error(`Unsupported archive: ${path.basename(archivePath)}`);
+    }
+    const entries = fs.readdirSync(tmpDir);
+    if (entries.length === 1 && fs.statSync(path.join(tmpDir, entries[0])).isDirectory()) {
+      moveDirContents(path.join(tmpDir, entries[0]), destDir);
+    } else {
+      moveDirContents(tmpDir, destDir);
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function installGithubAssetTool(tool) {
+  const asset = await getLatestGithubAsset(tool.github.owner, tool.github.repo, githubAssetPredicate(tool));
+  const destDir = getToolInstallDir(tool);
+  const tmpDir = path.join(os.tmpdir(), `clawshell-tool-${tool.id}-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const archivePath = path.join(tmpDir, asset.name);
+  try {
+    sendToolProgress(tool.id, 10, 'downloading');
+    await downloadToFile(asset.url, archivePath);
+    if (tool.manual || !/\.(zip|tar\.gz|tgz|tar\.xz)$/i.test(asset.name)) {
+      if (!tool.manual) {
+        fs.rmSync(destDir, { recursive: true, force: true });
+        fs.mkdirSync(destDir, { recursive: true });
+        const ext = process.platform === 'win32' ? '.exe' : '';
+        const binaryName = tool.id === 'jq' ? `jq${ext}` : path.basename(asset.name);
+        const targetPath = path.join(destDir, binaryName);
+        fs.copyFileSync(archivePath, targetPath);
+        if (process.platform !== 'win32') fs.chmodSync(targetPath, 0o755);
+        sendToolProgress(tool.id, 100, 'done');
+        return { ok: true, path: destDir };
+      }
+      await shell.openPath(archivePath);
+      return { ok: true, manual: true, path: archivePath, message: '已下载安装包，请按安装器提示完成安装' };
+    }
+    sendToolProgress(tool.id, 65, 'extracting');
+    await extractArchive(archivePath, destDir);
+    sendToolProgress(tool.id, 100, 'done');
+    return { ok: true, path: destDir };
+  } finally {
+    if (!tool.manual) fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function resolveNodeRuntimeDownload() {
+  const version = await getLatestNodeLTSVersion();
+  const arch = mapArchForDownloads();
+  const osName = process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'darwin' : 'linux';
+  const archiveName = `node-v${version}-${osName}-${arch}`;
+  const ext = process.platform === 'win32' ? '.zip' : '.tar.gz';
+  return {
+    name: `${archiveName}${ext}`,
+    url: `https://nodejs.org/dist/v${version}/${archiveName}${ext}`,
+  };
+}
+
+async function resolvePythonStandaloneDownload() {
+  const platformTarget = process.platform === 'win32'
+    ? 'x86_64-pc-windows-msvc'
+    : process.platform === 'darwin'
+      ? (process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin')
+      : 'x86_64-unknown-linux-gnu';
+  const release = await fetchJson('https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest');
+  const candidates = (release.assets || [])
+    .map(asset => ({ name: asset.name || '', url: asset.browser_download_url || '' }))
+    .filter(asset => {
+      const match = asset.name.match(/^cpython-(\d+)\.(\d+)\.(\d+)([A-Za-z].*)?\+/);
+      return match
+        && asset.name.includes(platformTarget)
+        && asset.name.includes('install_only')
+        && asset.name.includes('stripped')
+        && !asset.name.includes('freethreaded')
+        && !asset.name.includes('debug')
+        && asset.name.endsWith('.tar.gz')
+        && !match[4];
+    })
+    .sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }));
+  if (!candidates[0]) throw new Error(`No Python runtime found for ${platformTarget}`);
+  return candidates[0];
+}
+
+async function installRuntimeArchiveTool(tool, resolver) {
+  const asset = await resolver();
+  const destDir = getToolInstallDir(tool);
+  const tmpDir = path.join(os.tmpdir(), `clawshell-tool-${tool.id}-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const archivePath = path.join(tmpDir, asset.name);
+  try {
+    sendToolProgress(tool.id, 10, 'downloading');
+    await downloadToFile(asset.url, archivePath);
+    sendToolProgress(tool.id, 65, 'extracting');
+    await extractArchive(archivePath, destDir);
+    sendToolProgress(tool.id, 100, 'done');
+    return { ok: true, path: destDir };
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function installChromeForTesting(tool) {
+  const json = await fetchJson('https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json');
+  const platform = process.platform === 'win32'
+    ? 'win64'
+    : process.platform === 'darwin'
+      ? (process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64')
+      : 'linux64';
+  const item = json.channels?.Stable?.downloads?.chrome?.find(download => download.platform === platform);
+  if (!item?.url) throw new Error(`No Chrome for Testing download found for ${platform}`);
+  const name = path.basename(new URL(item.url).pathname);
+  return installRuntimeArchiveTool(tool, async () => ({ name, url: item.url }));
+}
+
+async function resolveImageMagickPortableDownload() {
+  const asset = await getLatestGithubAsset('ImageMagick', 'ImageMagick', (releaseAsset) => {
+    const name = String(releaseAsset.name || '');
+    return /^ImageMagick-[0-9].*portable-Q16-x64\.7z$/i.test(name)
+      && !name.includes('HDRI');
+  });
+  return { name: asset.name, url: asset.url };
+}
+
+async function installPlaywrightTool(tool) {
+  const destDir = getToolInstallDir(tool);
+  fs.rmSync(destDir, { recursive: true, force: true });
+  fs.mkdirSync(destDir, { recursive: true });
+  fs.writeFileSync(path.join(destDir, 'package.json'), JSON.stringify({
+    name: 'clawshell-playwright-tool',
+    version: '1.0.0',
+    private: true,
+    dependencies: { playwright: 'latest' },
+  }, null, 2), 'utf8');
+
+  const npmBin = getNpmBin();
+  const env = getOpenClawEnv();
+  env.PLAYWRIGHT_BROWSERS_PATH = path.join(destDir, 'browsers');
+  sendToolProgress(tool.id, 15, 'downloading');
+  return new Promise((resolve) => {
+    const proc = spawn(npmBin, ['install'], { cwd: destDir, env, stdio: ['ignore', 'pipe', 'pipe'], shell: true });
+    let stderr = '';
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('error', err => resolve({ ok: false, error: err.message }));
+    proc.on('exit', (code) => {
+      if (code === 0) {
+        sendToolProgress(tool.id, 100, 'done');
+        resolve({ ok: true, path: destDir });
+      } else {
+        resolve({ ok: false, error: stderr.trim().slice(-500) || `npm install exited with code ${code}` });
+      }
+    });
+  });
+}
+
+async function installManualUrlTool(tool) {
+  await shell.openExternal(tool.manualUrl || tool.homepage);
+  return { ok: true, manual: true, message: '已打开官方下载页面，请按页面提示安装' };
+}
+
+async function installToolPackage(id) {
+  const tool = getToolPackage(id);
+  if (!tool) return { ok: false, error: '未知工具包' };
+  if (!tool.platforms.includes(process.platform)) return { ok: false, error: '当前系统不支持该工具包' };
+  try {
+    if (tool.install === 'nodejs') return installRuntimeArchiveTool(tool, resolveNodeRuntimeDownload);
+    if (tool.install === 'python') return installRuntimeArchiveTool(tool, resolvePythonStandaloneDownload);
+    if (tool.install === 'github-asset' || tool.install === 'manual-github-asset') return installGithubAssetTool(tool);
+    if (tool.install === 'chrome-for-testing') return installChromeForTesting(tool);
+    if (tool.install === 'imagemagick-portable') return installRuntimeArchiveTool(tool, resolveImageMagickPortableDownload);
+    if (tool.install === 'npm-playwright') return installPlaywrightTool(tool);
+    if (tool.install === 'manual-url') return installManualUrlTool(tool);
+    return { ok: false, error: '该工具包尚未配置安装方式' };
+  } catch (err) {
+    sendToolProgress(tool.id, 0, 'failed');
+    return { ok: false, error: err.message || String(err) };
+  }
+}
+
+function uninstallToolPackage(id) {
+  const tool = getToolPackage(id);
+  if (!tool) return { ok: false, error: '未知工具包' };
+  if (tool.required || tool.builtin) return { ok: false, error: '基础运行时不可卸载' };
+  const installDir = getToolInstallDir(tool);
+  try {
+    fs.rmSync(installDir, { recursive: true, force: true });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 10. Gateway 配置保障
 //     确保 control-ui 客户端免设备认证、允许渲染进程直连
 // ═══════════════════════════════════════════════════════════════
@@ -1225,6 +2764,12 @@ function setupIPC() {
     saveConfig(merged);
     console.log(`[${APP_NAME}] Config saved`);
     return { ok: true };
+  });
+
+  ipcMain.handle('save-model-config', (_, modelConfig) => {
+    const result = saveModelConfigToDisk(modelConfig || {});
+    if (result.ok) console.log(`[${APP_NAME}] Model config saved to ${result.configPath}`);
+    return result;
   });
 
   ipcMain.handle('restart-gateway', () => restartGateway());
@@ -1333,11 +2878,10 @@ function setupIPC() {
   });
 
   function getSkillBaseDir(target = {}) {
-    const { configDir } = resolvePaths();
     if (target?.scope === 'agent' && target.agentId) {
       return path.join(getAgentWorkspaceDir(target.agentId), 'skills');
     }
-    return path.join(configDir, 'skills');
+    return getGlobalSkillsDir();
   }
 
   function resolveSkillPath(baseDir, slug) {
@@ -1451,33 +2995,25 @@ function setupIPC() {
     });
   });
 
-  ipcMain.handle('fetch-provider-models', async (_, baseUrl, apiKey) => {
+  ipcMain.handle('fetch-provider-models', async (_, baseUrl, apiKey, apiType) => {
     try {
       const url = baseUrl.replace(/\/+$/, '') + '/models';
-      return await new Promise((resolve, reject) => {
-        const parsed = new URL(url);
-        const options = {
-          hostname: parsed.hostname,
-          port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
-          path: parsed.pathname + (parsed.search || ''),
-          method: 'GET',
-          headers: { 'Authorization': `Bearer ${apiKey}` },
-          timeout: 10000,
-        };
-        const mod = parsed.protocol === 'https:' ? https : http;
-        const req = mod.request(options, (res) => {
-          let data = '';
-          res.on('data', chunk => data += chunk);
-          res.on('end', () => {
-            try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON')); }
-          });
-        });
-        req.on('error', reject);
-        req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
-        req.end();
+      const headers = apiType === 'anthropic'
+        ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+        : { 'Authorization': `Bearer ${apiKey}` };
+      const response = await requestBuffer(url, {
+        headers,
+        timeout: 10000,
+        maxBytes: 5 * 1024 * 1024,
+        maxBytesError: 'Model list response is too large',
       });
+      const data = response.buffer.toString('utf8');
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return { error: `HTTP ${response.statusCode}: ${data.slice(0, 300)}` };
+      }
+      try { return JSON.parse(data); } catch { throw new Error('Invalid JSON'); }
     } catch (e) {
-      return { error: e.message || String(e) };
+      return { error: formatNetworkError(e) };
     }
   });
 }
@@ -1694,8 +3230,31 @@ function setupIPC() {
     settingsCache = null; // Bust cache so renderer always gets latest from disk
     return getSettings();
   });
+  ipcMain.handle('get-cosyvoice-voices', async () => {
+    try {
+      const voices = await getCosyVoiceList();
+      return { ok: true, voices };
+    } catch (err) {
+      return { ok: false, error: err.message || String(err), voices: cosyVoiceListCache || [] };
+    }
+  });
+  ipcMain.handle('get-voice-sample-data-url', async (_, sampleUrl) => {
+    try {
+      const url = new URL(String(sampleUrl || ''));
+      if (url.protocol !== 'https:' || url.hostname !== 'help-static-aliyun-doc.aliyuncs.com') {
+        return { ok: false, error: 'Unsupported sample URL' };
+      }
+      const { buffer, contentType } = await fetchBuffer(url.toString());
+      const lowerPath = url.pathname.toLowerCase();
+      const mime = contentType.split(';')[0] || (lowerPath.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg');
+      return { ok: true, dataUrl: `data:${mime};base64,${buffer.toString('base64')}` };
+    } catch (err) {
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
   ipcMain.handle('save-settings', (_, settings) => {
     saveSettings(settings);
+    applyNetworkProxyEnvironment();
     return { ok: true };
   });
   ipcMain.handle('save-connection', (_, connection) => {
@@ -1729,79 +3288,197 @@ function setupIPC() {
     return { ok: true };
   });
 
+  const AGENT_ROLE_NAMES = {
+    employee: '员工',
+    assistant: '助理',
+    partner: '搭子',
+    friend: '好友',
+    lover: '恋人',
+    confidant: '知己',
+  };
+
+  function agentValue(text, fallback = '未设定') {
+    return String(text || '').trim() || fallback;
+  }
+
+  function agentRoleName(agentData) {
+    return AGENT_ROLE_NAMES[agentData.roleType] || AGENT_ROLE_NAMES.employee;
+  }
+
+  function generateAgentSoulMd(agentData) {
+    const base = [
+      '# 角色灵魂',
+      `我是${agentValue(agentData.name)}，${agentValue(agentData.age)}岁，性别${agentValue(agentData.gender)}。我的角色类型是${agentRoleName(agentData)}。`,
+    ];
+    let sections;
+
+    switch (agentData.roleType) {
+      case 'assistant':
+        sections = [
+          ...base,
+          '',
+          '# 协助方式',
+          `我主要协助用户处理：${agentValue(agentData.duty)}。`,
+          `我擅长的协助方向是：${agentValue(agentData.skills)}。`,
+          `我的主动程度是：${agentValue(agentData.attitude)}。`,
+          '',
+          '# 性格与边界',
+          `我的表达方式是：${agentValue(agentData.style)}。`,
+          `我的协作原则是：${agentValue(agentData.principle)}。`,
+          `我会避免：${agentValue(agentData.dislike)}。`,
+        ];
+        break;
+      case 'partner':
+        sections = [
+          ...base,
+          '',
+          '# 陪伴关系',
+          `我和用户的关系是：${agentValue(agentData.myRelation)}。`,
+          `我适合陪用户一起做的事：${agentValue(agentData.hobby)}。`,
+          `我常说的话是："${agentValue(agentData.motto)}"。`,
+          '',
+          '# 相处气质',
+          `我的性格特质是：${agentValue(agentData.charm)}。`,
+          `我的说话方式是：${agentValue(agentData.style)}。`,
+          `我们的搭伙规则是：${agentValue(agentData.principle)}。`,
+        ];
+        break;
+      case 'friend':
+        sections = [
+          ...base,
+          '',
+          '# 朋友关系',
+          `我和用户的关系是：${agentValue(agentData.myRelation)}。`,
+          `我会像真实朋友一样回应，性格特质是：${agentValue(agentData.charm)}。`,
+          `我们常聊的话题是：${agentValue(agentData.hobby)}。`,
+          '',
+          '# 相处方式',
+          `我的说话方式是：${agentValue(agentData.style)}。`,
+          `我重视的相处边界是：${agentValue(agentData.principle)}。`,
+          `我会避免：${agentValue(agentData.dislike)}。`,
+        ];
+        break;
+      case 'lover':
+        sections = [
+          ...base,
+          '',
+          '# 亲密关系',
+          `我和用户的关系是：${agentValue(agentData.myRelation)}。`,
+          `我吸引人的特质是：${agentValue(agentData.charm)}。`,
+          `我偏好的亲密日常是：${agentValue(agentData.hobby)}。`,
+          '',
+          '# 爱意表达',
+          `我的亲密表达方式是：${agentValue(agentData.style)}。`,
+          `我常用的亲密表达是："${agentValue(agentData.motto)}"。`,
+          `我在关系中坚持的边界是：${agentValue(agentData.principle)}。`,
+        ];
+        break;
+      case 'confidant':
+        sections = [
+          ...base,
+          '',
+          '# 精神连接',
+          `我和用户的关系是：${agentValue(agentData.myRelation)}。`,
+          `我理解用户的方式是：${agentValue(agentData.charm)}。`,
+          `我适合陪用户聊：${agentValue(agentData.hobby)}。`,
+          '',
+          '# 陪伴原则',
+          `我的安抚方式是：${agentValue(agentData.style)}。`,
+          `我会坚持的守护原则是：${agentValue(agentData.principle)}。`,
+          `我会避免：${agentValue(agentData.dislike)}。`,
+        ];
+        break;
+      case 'employee':
+      default:
+        sections = [
+          ...base,
+          '',
+          '# 工作定位',
+          `我目前担任${agentValue(agentData.role)}。`,
+          `我的核心职责是：${agentValue(agentData.duty)}。`,
+          `我擅长的能力是：${agentValue(agentData.skills)}。`,
+          '',
+          '# 执行风格',
+          `我的沟通方式是：${agentValue(agentData.style)}。`,
+          `我的执行状态是：${agentValue(agentData.attitude)}。`,
+          `我的工作原则是：${agentValue(agentData.principle)}。`,
+        ];
+        break;
+    }
+
+    if (String(agentData.extraInfo || '').trim()) {
+      sections.push('', '# 其他信息', String(agentData.extraInfo).trim());
+    }
+    return `${sections.join('\n')}\n`;
+  }
+
+  function generateAgentIdentityMd(agentData) {
+    const lines = [
+      '# 基础信息',
+      `+ 姓名:${agentValue(agentData.name)}`,
+      `+ 性别:${agentValue(agentData.gender)}`,
+      `+ 年龄:${agentValue(agentData.age)}`,
+      `+ 角色类型:${agentRoleName(agentData)}`,
+    ];
+
+    if (agentData.roleType === 'employee') {
+      lines.push(`+ 职位:${agentValue(agentData.role)}`, `+ 工作职责:${agentValue(agentData.duty)}`, `+ 擅长能力:${agentValue(agentData.skills)}`, `+ 执行状态:${agentValue(agentData.attitude)}`);
+    } else if (agentData.roleType === 'assistant') {
+      lines.push(`+ 协助范围:${agentValue(agentData.duty)}`, `+ 擅长协助:${agentValue(agentData.skills)}`, `+ 主动程度:${agentValue(agentData.attitude)}`, `+ 避免方式:${agentValue(agentData.dislike)}`);
+    } else {
+      lines.push(`+ 与用户的关系:${agentValue(agentData.myRelation)}`, `+ 偏好话题/活动:${agentValue(agentData.hobby)}`, `+ 口头禅:${agentValue(agentData.motto)}`);
+    }
+
+    lines.push(
+      '',
+      '# 性格表达',
+      `+ 核心特质:${agentValue(agentData.charm || agentData.role)}`,
+      `+ 说话风格:${agentValue(agentData.style)}`,
+      `+ 重要原则:${agentValue(agentData.principle)}`,
+      '',
+      '# 人物关系',
+      `+ 对用户的称呼:${agentValue(agentData.callMe)}`,
+      `+ 与其他人的关系:${agentValue(agentData.othersRelation)}`
+    );
+
+    return `${lines.join('\n')}\n`;
+  }
+
+  function generateAgentUserMd(agentData) {
+    const relation = agentData.roleType === 'employee'
+      ? `我是用户的${agentValue(agentData.role || agentData.myRelation, '员工')}`
+      : `我是用户的${agentValue(agentData.myRelation, agentRoleName(agentData))}`;
+
+    return `# 用户档案
++ 用户姓名:未知
++ 用户年龄:未知
++ 用户性别:未知
++ ${relation}
++ 我对用户的称呼:${agentValue(agentData.callMe)}
+`;
+  }
+
   ipcMain.handle('save-agent-workspace', async (_, agentData) => {
-    const dataDir = resolveDataDir();
-    const workspaceDir = path.join(dataDir, '.openclaw', 'workspace');
+    const { configDir } = resolvePaths();
+    const workspaceDir = path.join(configDir, 'workspace');
     try {
       fs.mkdirSync(workspaceDir, { recursive: true });
 
       // Write SOUL.md
-      const soulMd = `
-# 身份信息
-我叫${agentData.name}，我今年${agentData.age}岁，性别${agentData.gender}，目前担任${agentData.role}，隶属于${agentData.dept}。我的核心职责是${agentData.duty}
-
-# 擅长技能
-${agentData.skills}
-
-# 性格特质
-我性格${agentData.charm}，说话风格${agentData.style}，平时常说的口头禅是"${agentData.motto}"
-
-# 工作态度与原则
-我的工作态度是${agentData.attitude}，处事原则是${agentData.principle}
-
-# 喜好与短板
-我个人喜欢${agentData.hobby}，最反感${agentData.dislike}；我的工作短板是${agentData.weakness}，但我会发挥优势，专注执行，弥补不足。
-
-# 专属信念
-我的座右铭是"${agentData.credo}"，汇报工作时会遵循${agentData.report}的原则
-`;
+      const soulMd = agentData.files?.SOUL || generateAgentSoulMd(agentData);
       fs.writeFileSync(path.join(workspaceDir, 'SOUL.md'), soulMd, 'utf8');
 
       // Write IDENTITY.md
-      const identityMd = `
-# 基础信息
-+ 姓名:${agentData.name}
-+ 性别:${agentData.gender}
-+ 年龄:${agentData.age}
-+ 角色:${agentData.role}
-+ 工作职责:${agentData.duty}
-+ 所属部门:${agentData.dept}
-
-# 性格特征
-+ 性格:${agentData.charm}
-+ 说话风格:${agentData.style}
-+ 口头禅:${agentData.motto}
-
-# 工作特征
-+ 擅长技能:${agentData.skills}
-+ 工作短板:${agentData.weakness}
-+ 工作态度:${agentData.attitude}
-
-# 三观特征
-+ 处事原则:${agentData.principle}
-+ 个人喜好:${agentData.hobby}
-+ 反感事物:${agentData.dislike}
-+ 座右铭:${agentData.credo}
-
-# 人物关系
-+ 与其他人的关系:${agentData.othersRelation}
-`;
+      const identityMd = agentData.files?.IDENTITY || generateAgentIdentityMd(agentData);
       fs.writeFileSync(path.join(workspaceDir, 'IDENTITY.md'), identityMd, 'utf8');
 
       // Write USER.md
-      const userMd = `
-# 用户档案 
-+ 用户姓名:未知
-+ 用户年龄:未知
-+ 用户性别:未知
-+ 我与用户的关系:我是他(她)的${agentData.myRelation}
-+ 我对用户的称呼:${agentData.callMe}
-+ 我对用户的汇报方式:${agentData.report}
-`;
+      const userMd = agentData.files?.USER || generateAgentUserMd(agentData);
       fs.writeFileSync(path.join(workspaceDir, 'USER.md'), userMd, 'utf8');
 
       // Write agent_info.json for structured data reuse
       const agentInfo = {
+        roleType: agentData.roleType || 'employee',
         name: agentData.name,
         gender: agentData.gender,
         age: agentData.age,
@@ -1823,6 +3500,7 @@ ${agentData.skills}
         dislike: agentData.dislike,
         credo: agentData.credo,
         report: agentData.report,
+        extraInfo: agentData.extraInfo,
         avatar: agentData.avatar,
       };
       fs.writeFileSync(path.join(workspaceDir, 'agent_info.json'), JSON.stringify(agentInfo, null, 2), 'utf8');
@@ -2000,6 +3678,27 @@ ${agentData.skills}
     return installPortableNode();
   });
 
+  ipcMain.handle('list-tool-packages', () => {
+    return TOOL_PACKAGES.map(normalizeToolForRenderer);
+  });
+
+  ipcMain.handle('install-tool-package', async (_, id) => {
+    return installToolPackage(id);
+  });
+
+  ipcMain.handle('uninstall-tool-package', (_, id) => {
+    return uninstallToolPackage(id);
+  });
+
+  ipcMain.handle('open-tool-package-dir', async (_, id) => {
+    const tool = getToolPackage(id);
+    if (!tool) return { ok: false, error: '未知工具包' };
+    const dir = getToolInstallDir(tool);
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    await shell.openPath(fs.existsSync(dir) ? dir : path.dirname(dir));
+    return { ok: true };
+  });
+
   ipcMain.handle('list-openclaw-versions', () => {
     return listInstalledCoreVersions();
   });
@@ -2170,6 +3869,63 @@ ${agentData.skills}
     mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
   });
   ipcMain.handle('window-close', () => mainWindow?.close());
+  ipcMain.handle('set-immersive-fullscreen', (_, enabled) => {
+    immersiveLog('set fullscreen', { enabled: !!enabled, hasWindow: !!mainWindow });
+    if (!mainWindow) return { ok: false };
+    mainWindow.setFullScreen(!!enabled);
+    return { ok: true };
+  });
+
+  // ── 沉浸语音模式 ──
+  ipcMain.handle('immersive-voice-start-asr', (_, options = {}) => {
+    immersiveLog('IPC start ASR', { model: options?.model, sampleRate: options?.sampleRate, hasApiKey: !!options?.apiKey });
+    try { return startDashScopeAsr(options); }
+    catch (err) {
+      immersiveWarn('IPC start ASR failed', err.message || String(err));
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
+  ipcMain.handle('immersive-voice-send-audio', (_, sessionId, chunk) => {
+    const session = immersiveVoiceSessions.get(sessionId);
+    if (!session?.ws || session.ws.readyState !== WebSocket.OPEN) return { ok: false, error: 'ASR session is not ready' };
+    const bytes = Buffer.from(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
+    session.audioFrames = (session.audioFrames || 0) + 1;
+    if (session.audioFrames <= 5 || session.audioFrames % 100 === 0) {
+      immersiveLog('IPC ASR audio chunk', { sessionId, frame: session.audioFrames, bytes: bytes.length, protocol: session.protocol });
+    }
+    if (session.protocol === 'realtime') {
+      session.ws.send(JSON.stringify(realtimeEvent('input_audio_buffer.append', {
+        audio: bytes.toString('base64'),
+      })));
+    } else {
+      session.ws.send(bytes);
+    }
+    return { ok: true };
+  });
+  ipcMain.handle('immersive-voice-commit-audio', (_, sessionId) => {
+    const session = immersiveVoiceSessions.get(sessionId);
+    if (!session?.ws || session.ws.readyState !== WebSocket.OPEN) return { ok: false, error: 'ASR session is not ready' };
+    if (session.protocol === 'realtime') {
+      session.ws.send(JSON.stringify(realtimeEvent('input_audio_buffer.commit')));
+    }
+    return { ok: true };
+  });
+  ipcMain.handle('immersive-voice-stop-asr', (_, sessionId) => {
+    immersiveLog('IPC stop ASR', { sessionId });
+    return stopImmersiveVoiceSession(sessionId, true);
+  });
+  ipcMain.handle('immersive-voice-start-tts', (_, options = {}) => {
+    immersiveLog('IPC start TTS', { model: options?.model, voice: options?.voice, textLength: String(options?.text || '').length, hasApiKey: !!options?.apiKey });
+    try { return startDashScopeTts(options); }
+    catch (err) {
+      immersiveWarn('IPC start TTS failed', err.message || String(err));
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
+  ipcMain.handle('immersive-voice-stop-tts', (_, sessionId) => {
+    immersiveLog('IPC stop TTS', { sessionId });
+    return stopImmersiveVoiceSession(sessionId, false);
+  });
 
 // ═══════════════════════════════════════════════════════════════
 // 12. 窗口管理
@@ -2219,7 +3975,12 @@ function createWindow() {
 app.whenReady().then(async () => {
   console.log(`[${APP_NAME}] v${app.getVersion()} starting...`);
 
+  applyBundledRuntimeEnvironment();
   ensureConfig();
+  ensureKnownModelMetadata();
+  ensureBundledSkillsInstalled();
+  ensureInstalledSkillsEnabled();
+  applyNetworkProxyEnvironment();
   ensureDeviceAuthDisabled();
   setupIPC();
   createWindow();

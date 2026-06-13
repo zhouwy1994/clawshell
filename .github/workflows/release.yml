@@ -36,8 +36,10 @@ jobs:
 
       - run: pnpm install
 
-      - name: Download Node.js portable runtime (latest LTS)
+      - name: Download portable runtimes
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # 从 nodejs.org 获取最新 LTS 版本号（lts 字段为字符串的是 LTS，false 的是 Current）
           NODE_VER=$(curl -sL https://nodejs.org/dist/index.json \
@@ -48,23 +50,97 @@ jobs:
           fi
           echo "Latest Node.js LTS version: ${NODE_VER}"
           mkdir -p resources/runtime
+          rm -rf resources/runtime/nodejs resources/runtime/python
           if [ "${{ matrix.platform }}" = "win" ]; then
             echo "Downloading Node.js v${NODE_VER} for Windows x64..."
             curl -sL "https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-win-x64.zip" -o /tmp/node.zip
             unzip -q /tmp/node.zip -d /tmp/node-out
-            mv /tmp/node-out/node-v${NODE_VER}-win-x64 resources/runtime/node-win32-x64
+            mv /tmp/node-out/node-v${NODE_VER}-win-x64 resources/runtime/nodejs
+            PYTHON_TARGET="x86_64-pc-windows-msvc"
           elif [ "${{ matrix.platform }}" = "mac" ]; then
             echo "Downloading Node.js v${NODE_VER} for macOS arm64..."
             curl -sL "https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-darwin-arm64.tar.gz" -o /tmp/node.tar.gz
             tar xzf /tmp/node.tar.gz -C /tmp/
-            mv "/tmp/node-v${NODE_VER}-darwin-arm64" resources/runtime/node-darwin-arm64
+            mv "/tmp/node-v${NODE_VER}-darwin-arm64" resources/runtime/nodejs
+            PYTHON_TARGET="aarch64-apple-darwin"
           else
             echo "Downloading Node.js v${NODE_VER} for Linux x64..."
             curl -sL "https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-linux-x64.tar.xz" -o /tmp/node.tar.xz
             tar xf /tmp/node.tar.xz -C /tmp/
-            mv "/tmp/node-v${NODE_VER}-linux-x64" resources/runtime/node-linux-x64
+            mv "/tmp/node-v${NODE_VER}-linux-x64" resources/runtime/nodejs
+            PYTHON_TARGET="x86_64-unknown-linux-gnu"
           fi
-          echo "Bundled Node.js runtime:"
+
+          echo "Resolving portable Python runtime for ${PYTHON_TARGET}..."
+          PYTHON_URL=$(PYTHON_TARGET="$PYTHON_TARGET" python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.request
+
+          target = os.environ["PYTHON_TARGET"]
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "clawshell-release-workflow",
+          }
+          token = os.environ.get("GITHUB_TOKEN")
+          if token:
+              headers["Authorization"] = f"Bearer {token}"
+          req = urllib.request.Request(
+              "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest",
+              headers=headers,
+          )
+          with urllib.request.urlopen(req, timeout=30) as res:
+              release = json.load(res)
+
+          candidates = []
+          for asset in release.get("assets", []):
+              name = asset.get("name", "")
+              url = asset.get("browser_download_url", "")
+              version_match = re.match(r"^cpython-(\d+)\.(\d+)\.(\d+)([A-Za-z].*)?\+", name)
+              if (
+                  version_match
+                  and target in name
+                  and "install_only" in name
+                  and "freethreaded" not in name
+                  and "debug" not in name
+                  and name.endswith(".tar.gz")
+                  and not version_match.group(4)
+              ):
+                  version = tuple(int(version_match.group(i)) for i in range(1, 4))
+                  candidates.append((version, 1 if "stripped" in name else 0, name, url))
+
+          if not candidates:
+              sys.exit(f"No python-build-standalone asset found for {target}")
+
+          candidates.sort(reverse=True)
+          print(candidates[0][3])
+          PY
+          )
+          echo "Downloading Python from ${PYTHON_URL}"
+          curl -sL "$PYTHON_URL" -o /tmp/python.tar.gz
+          mkdir -p /tmp/python-out
+          tar xzf /tmp/python.tar.gz -C /tmp/python-out
+          PYTHON_ROOT=/tmp/python-out/python
+          if [ ! -d "$PYTHON_ROOT" ]; then
+            PYTHON_BIN=$(find /tmp/python-out \( -type f -o -type l \) \( -name python.exe -o -name python3 -o -name python \) | head -n 1)
+            if [ -z "$PYTHON_BIN" ]; then
+              echo "ERROR: Extracted Python runtime does not contain a python executable"
+              exit 1
+            fi
+            PYTHON_ROOT=$(dirname "$PYTHON_BIN")
+            if [ "$(basename "$PYTHON_ROOT")" = "bin" ]; then
+              PYTHON_ROOT=$(dirname "$PYTHON_ROOT")
+            fi
+          fi
+          if [ ! -d "$PYTHON_ROOT" ]; then
+            echo "ERROR: Unable to resolve extracted Python runtime root"
+            exit 1
+          fi
+          mv "$PYTHON_ROOT" resources/runtime/python
+
+          echo "Bundled portable runtimes:"
           ls -la resources/runtime/
 
       - run: pnpm run electron:build -- --publish never
@@ -76,10 +152,8 @@ jobs:
         with:
           name: ${{ matrix.platform }}
           path: |
-            release/*.exe
             release/*.dmg
             release/*.AppImage
-            release/*.blockmap
             release/*.zip
             release/*.tar.gz
             release/*.deb
@@ -93,6 +167,8 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -102,7 +178,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ClawShell ${{ github.ref_name }}
-          body: |
-            ClawShell ${{ github.ref_name }} release.
+          body_path: CHANGELOG.md
           files: |
             artifacts/**/*

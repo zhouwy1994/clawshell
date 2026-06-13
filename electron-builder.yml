@@ -16,8 +16,12 @@ files:
   - "!node_modules/**/.cache"
 asar: false
 extraResources:
-  - from: resources/runtime
-    to: runtime
+  - from: resources
+    to: .
+    filter:
+      - "**/*"
+  - from: skills
+    to: skills
     filter:
       - "**/*"
 mac:
@@ -49,9 +53,6 @@ dmg:
 win:
   target:
     - target: nsis
-      arch:
-        - x64
-    - target: portable
       arch:
         - x64
     - target: msi

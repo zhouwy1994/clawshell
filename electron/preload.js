@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('clawshell', {
 
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (cfg) => ipcRenderer.invoke('save-config', cfg),
+  saveModelConfig: (cfg) => ipcRenderer.invoke('save-model-config', cfg),
 
   // ── 诊断与修复 ──
 
@@ -40,7 +41,7 @@ contextBridge.exposeInMainWorld('clawshell', {
   readSkillFile: (slug, filename, target) => ipcRenderer.invoke('read-skill-file', slug, filename, target),
 
   // ── 模型供应商 API ──
-  fetchProviderModels: (baseUrl, apiKey) => ipcRenderer.invoke('fetch-provider-models', baseUrl, apiKey),
+  fetchProviderModels: (baseUrl, apiKey, apiType) => ipcRenderer.invoke('fetch-provider-models', baseUrl, apiKey, apiType),
 
   // ── 本地文件打开 ──
 
@@ -65,6 +66,8 @@ contextBridge.exposeInMainWorld('clawshell', {
   openDataDir: () => ipcRenderer.invoke('open-data-dir'),
   openLogsDir: () => ipcRenderer.invoke('open-logs-dir'),
   getSettings: () => ipcRenderer.invoke('get-settings'),
+  getCosyVoiceVoices: () => ipcRenderer.invoke('get-cosyvoice-voices'),
+  getVoiceSampleDataUrl: (sampleUrl) => ipcRenderer.invoke('get-voice-sample-data-url', sampleUrl),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
 
   // ── OpenClaw 核心版本管理 ──
@@ -84,6 +87,15 @@ contextBridge.exposeInMainWorld('clawshell', {
     ipcRenderer.on('node-install-progress', handler);
     return () => ipcRenderer.removeListener('node-install-progress', handler);
   },
+  listToolPackages: () => ipcRenderer.invoke('list-tool-packages'),
+  installToolPackage: (id) => ipcRenderer.invoke('install-tool-package', id),
+  uninstallToolPackage: (id) => ipcRenderer.invoke('uninstall-tool-package', id),
+  openToolPackageDir: (id) => ipcRenderer.invoke('open-tool-package-dir', id),
+  onToolPackageProgress: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('tool-package-progress', handler);
+    return () => ipcRenderer.removeListener('tool-package-progress', handler);
+  },
 
   onCoreInstallProgress: (callback) => {
     const handler = (_, data) => callback(data);
@@ -102,6 +114,20 @@ contextBridge.exposeInMainWorld('clawshell', {
   windowMinimize: () => ipcRenderer.invoke('window-minimize'),
   windowMaximize: () => ipcRenderer.invoke('window-maximize'),
   windowClose: () => ipcRenderer.invoke('window-close'),
+  setImmersiveFullscreen: (enabled) => ipcRenderer.invoke('set-immersive-fullscreen', enabled),
+
+  // ── 沉浸语音模式 ──
+  immersiveVoiceStartAsr: (options) => ipcRenderer.invoke('immersive-voice-start-asr', options),
+  immersiveVoiceSendAudio: (sessionId, chunk) => ipcRenderer.invoke('immersive-voice-send-audio', sessionId, chunk),
+  immersiveVoiceCommitAudio: (sessionId) => ipcRenderer.invoke('immersive-voice-commit-audio', sessionId),
+  immersiveVoiceStopAsr: (sessionId) => ipcRenderer.invoke('immersive-voice-stop-asr', sessionId),
+  immersiveVoiceStartTts: (options) => ipcRenderer.invoke('immersive-voice-start-tts', options),
+  immersiveVoiceStopTts: (sessionId) => ipcRenderer.invoke('immersive-voice-stop-tts', sessionId),
+  onImmersiveVoiceEvent: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('immersive-voice-event', handler);
+    return () => ipcRenderer.removeListener('immersive-voice-event', handler);
+  },
 
   // ── 事件监听（主进程 → 渲染进程推送） ──
 

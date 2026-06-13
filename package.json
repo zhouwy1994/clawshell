@@ -1,6 +1,6 @@
 {
   "name": "clawshell",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "虾壳 ClawShell — 面向普通用户的 AI 助手桌面客户端",
   "main": "electron/main.js",
   "author": "ClawShell",

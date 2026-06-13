@@ -8,6 +8,7 @@
         v-if="recordingSupported && !isStreaming"
         class="input-btn"
         :class="{ recording: isRecording }"
+        :disabled="isTranscribing"
         @click="toggleRecording"
         :title="isRecording ? t('chat.stopRecording') : t('chat.voiceInput')"
       >
@@ -66,6 +67,7 @@
 import { ref, computed, nextTick } from 'vue'
 import { getIcon } from '@/lib/icons'
 import { t } from '@/i18n'
+import { ipc } from '@/lib/ipc'
 import { isRecordingSupported, startRecording, stopRecording } from '@/lib/speech'
 
 const props = defineProps({
@@ -89,15 +91,21 @@ const fileInputRef = ref(null)
 const localAttachments = ref([])
 const recordingSupported = isRecordingSupported()
 const isRecording = ref(false)
+const isTranscribing = ref(false)
 const recordError = ref('')
 
 const canSend = computed(() => {
-  return !props.disabled && (text.value.trim() || localAttachments.value.length > 0)
+  return !props.disabled && !isTranscribing.value && (text.value.trim() || localAttachments.value.length > 0)
 })
 
 const previewAttachments = computed(() => localAttachments.value)
 
+const ASR_SAMPLE_RATE = 16000
+const ASR_CHUNK_BYTES = 3200
+const ASR_TIMEOUT_MS = 30000
+
 function toggleRecording() {
+  if (isTranscribing.value) return
   recordError.value = ''
   if (isRecording.value) {
     stopRecording()
@@ -106,15 +114,32 @@ function toggleRecording() {
   startRecording({
     onStart: () => { isRecording.value = true },
     onEnd: () => { isRecording.value = false },
-    onComplete: ({ dataUrl, mimeType, playbackUrl, durationSeconds }) => {
+    onComplete: async ({ blob, dataUrl, mimeType, playbackUrl, durationSeconds }) => {
       console.debug('[chat-input] voice attachment ready', {
         mimeType,
         dataUrlLength: typeof dataUrl === 'string' ? dataUrl.length : 0,
         playbackUrl,
         durationSeconds,
       })
-      // Send audio as attachment
-      emit('send', '', [{ dataUrl, mimeType, playbackUrl, durationSeconds, fileName: 'voice-message.webm' }])
+      isTranscribing.value = true
+      try {
+        const transcriptText = await transcribeVoiceBlob(blob)
+        if (!transcriptText) throw new Error('未识别到语音内容')
+        emit('send', '', [{
+          dataUrl,
+          mimeType,
+          playbackUrl,
+          durationSeconds,
+          fileName: 'voice-message.webm',
+          localOnly: true,
+          transcriptText,
+        }])
+      } catch (err) {
+        recordError.value = err?.message || String(err)
+        setTimeout(() => { recordError.value = '' }, 3000)
+      } finally {
+        isTranscribing.value = false
+      }
     },
     onError: (msg) => {
       isRecording.value = false
@@ -122,6 +147,132 @@ function toggleRecording() {
       setTimeout(() => { recordError.value = '' }, 3000)
     },
   })
+}
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function downsampleTo16k(input, inputRate) {
+  if (inputRate === ASR_SAMPLE_RATE) return input
+  const ratio = inputRate / ASR_SAMPLE_RATE
+  const length = Math.floor(input.length / ratio)
+  const result = new Float32Array(length)
+  for (let i = 0; i < length; i++) {
+    const start = Math.floor(i * ratio)
+    const end = Math.min(Math.floor((i + 1) * ratio), input.length)
+    let sum = 0
+    for (let j = start; j < end; j++) sum += input[j]
+    result[i] = sum / Math.max(1, end - start)
+  }
+  return result
+}
+
+function floatToPcm16(float32) {
+  const pcm = new Int16Array(float32.length)
+  for (let i = 0; i < float32.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32[i]))
+    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+  }
+  return new Uint8Array(pcm.buffer)
+}
+
+async function decodeVoiceBlobToPcm(blob) {
+  if (!blob) throw new Error('录音数据为空')
+  const audioContext = new AudioContext()
+  try {
+    const audioBuffer = await audioContext.decodeAudioData(await blob.arrayBuffer())
+    const mixed = new Float32Array(audioBuffer.length)
+    for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+      const data = audioBuffer.getChannelData(channel)
+      for (let i = 0; i < data.length; i++) mixed[i] += data[i] / audioBuffer.numberOfChannels
+    }
+    return floatToPcm16(downsampleTo16k(mixed, audioBuffer.sampleRate))
+  } finally {
+    try { await audioContext.close() } catch {}
+  }
+}
+
+async function transcribeVoiceBlob(blob) {
+  const settings = await ipc.getSettings()
+  const apiKey = settings?.voice?.dashscopeApiKey || ''
+  if (!apiKey) throw new Error('请先在设置 > 语音设置中填写百炼 DashScope API KEY')
+
+  const pcm = await decodeVoiceBlobToPcm(blob)
+  if (!pcm.byteLength) throw new Error('录音数据为空')
+
+  const res = await ipc.immersiveVoiceStartAsr({
+    apiKey,
+    model: 'qwen3-asr-flash-realtime',
+    sampleRate: ASR_SAMPLE_RATE,
+    silenceDurationMs: 300,
+  })
+  if (!res?.ok) throw new Error(res?.error || '语音识别连接失败')
+
+  const sessionId = res.sessionId
+  let removeListener = null
+  let settled = false
+  let sentenceDone = false
+
+  try {
+    let readyResolve
+    let readyReject
+    const readyPromise = new Promise((resolve, reject) => {
+      readyResolve = resolve
+      readyReject = reject
+    })
+    const sentencePromise = new Promise((resolve, reject) => {
+      removeListener = ipc.onImmersiveVoiceEvent((data) => {
+        if (!data || data.sessionId !== sessionId || settled) return
+        if (data.event === 'asr:ready') {
+          readyResolve()
+          return
+        }
+        if (data.event === 'asr:sentence-end') {
+          sentenceDone = true
+          resolve(String(data.text || data.transcript || '').trim())
+          return
+        }
+        if (data.event === 'asr:noise-filtered') {
+          sentenceDone = true
+          resolve('')
+          return
+        }
+        if (data.event === 'asr:error' || data.event === 'asr:closed') {
+          const message = data.error || (data.event === 'asr:closed' ? '语音识别连接已关闭' : '语音识别失败')
+          readyReject(new Error(message))
+          reject(new Error(message))
+        }
+      })
+    })
+    sentencePromise.catch(() => {})
+
+    await Promise.race([
+      readyPromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('语音识别连接超时')), 8000)),
+    ])
+
+    for (let offset = 0; offset < pcm.byteLength; offset += ASR_CHUNK_BYTES) {
+      const chunk = pcm.slice(offset, Math.min(offset + ASR_CHUNK_BYTES, pcm.byteLength))
+      const sendRes = await ipc.immersiveVoiceSendAudio(sessionId, chunk)
+      if (sendRes?.ok === false) throw new Error(sendRes.error || '语音数据发送失败')
+      if (sentenceDone) break
+      await wait(20)
+    }
+    if (!sentenceDone) {
+      const commitRes = await ipc.immersiveVoiceCommitAudio(sessionId)
+      if (commitRes?.ok === false) throw new Error(commitRes.error || '语音提交失败')
+    }
+
+    return await Promise.race([
+      sentencePromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('语音识别超时')), ASR_TIMEOUT_MS)),
+    ])
+  } finally {
+    settled = true
+    removeListener?.()
+    await ipc.immersiveVoiceStopAsr(sessionId)
+  }
 }
 
 function autoResize() {

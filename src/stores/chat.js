@@ -75,6 +75,46 @@ function collectAttachmentPlaybackSources(message) {
     }))
 }
 
+function collectLocalImageSources(message) {
+  if (!message || !Array.isArray(message.content)) return []
+  return message.content
+    .map((block) => {
+      if (block?.type === 'image' && block.source?.data) {
+        return {
+          kind: 'image',
+          source: {
+            ...block.source,
+            data: block.source.data,
+          },
+        }
+      }
+      if (block?.type === 'attachment' && block.attachment?.url) {
+        const mimeType = block.attachment.mimeType || block.attachment.media_type || ''
+        const url = block.attachment.playbackUrl || block.attachment.url || ''
+        if (!mimeType.startsWith('image/') && !String(url).startsWith('data:image/')) return null
+        return {
+          kind: 'attachment',
+          attachment: {
+            ...block.attachment,
+            url: block.attachment.url,
+            playbackUrl: block.attachment.playbackUrl,
+          },
+        }
+      }
+      return null
+    })
+    .filter(Boolean)
+}
+
+function countImageBlocks(content) {
+  if (!Array.isArray(content)) return 0
+  return content.filter(block =>
+    block?.type === 'image' ||
+    String(block?.attachment?.mimeType || block?.attachment?.media_type || '').startsWith('image/') ||
+    String(block?.attachment?.url || block?.attachment?.playbackUrl || '').startsWith('data:image/')
+  ).length
+}
+
 function buildAttachmentSignature(message) {
   if (!message || !Array.isArray(message.content)) return ''
   const text = resolveMessageText(message.content)
@@ -82,42 +122,93 @@ function buildAttachmentSignature(message) {
     .filter(block => block?.type === 'attachment' && block.attachment)
     .map(block => `${block.attachment.label || ''}|${block.attachment.kind || ''}`)
     .join('||')
-  return `${(message.role || '').toLowerCase()}::${text}::${attachments}`
+  const imageCount = countImageBlocks(message.content)
+  return `${(message.role || '').toLowerCase()}::${text}::${attachments}::images=${imageCount}`
+}
+
+function takeQueueItem(map, key) {
+  const queue = key ? map.get(key) : null
+  return queue?.length ? queue.shift() : null
 }
 
 function mergeLocalPlaybackSources(history, currentMessages) {
   const sourceMap = new Map()
+  const imageSourceMap = new Map()
+  const imageFallbackMap = new Map()
 
   for (const message of currentMessages || []) {
     const sources = collectAttachmentPlaybackSources(message)
-    if (sources.length === 0) continue
     const key = buildAttachmentSignature(message)
-    if (!key) continue
-    const existing = sourceMap.get(key) || []
-    existing.push(sources)
-    sourceMap.set(key, existing)
+    if (sources.length > 0) {
+      const existing = sourceMap.get(key) || []
+      existing.push(sources)
+      sourceMap.set(key, existing)
+    }
+
+    const imageSources = collectLocalImageSources(message)
+    if (imageSources.length > 0) {
+      const existingImages = imageSourceMap.get(key) || []
+      existingImages.push(imageSources)
+      imageSourceMap.set(key, existingImages)
+
+      const roleKey = (message.role || '').toLowerCase()
+      const fallbackImages = imageFallbackMap.get(roleKey) || []
+      fallbackImages.push(imageSources)
+      imageFallbackMap.set(roleKey, fallbackImages)
+    }
   }
 
   return (history || []).map((message) => {
     const key = buildAttachmentSignature(message)
-    const matchQueue = key ? sourceMap.get(key) : null
-    const matched = matchQueue?.length ? matchQueue.shift() : null
-    if (!matched || !Array.isArray(message.content)) return message
+    const matched = takeQueueItem(sourceMap, key)
+    const roleKey = (message.role || '').toLowerCase()
+    const historyImageCount = countImageBlocks(message.content)
+    const exactImages = takeQueueItem(imageSourceMap, key)
+    if (exactImages) takeQueueItem(imageFallbackMap, roleKey)
+    const matchedImages = exactImages || takeQueueItem(imageFallbackMap, roleKey)
+    if ((!matched && !matchedImages) || !Array.isArray(message.content)) return message
 
     let playbackIndex = 0
+    let imageIndex = 0
     const nextContent = message.content.map((block) => {
-      if (block?.type !== 'attachment' || !block.attachment) return block
-      const playback = matched[playbackIndex++]
-      if (!playback?.playbackUrl) return block
-      return {
-        ...block,
-        attachment: {
-          ...block.attachment,
-          playbackUrl: playback.playbackUrl,
-          durationSeconds: playback.durationSeconds || block.attachment.durationSeconds,
-        },
+      if (block?.type === 'image') {
+        const image = matchedImages?.[imageIndex++]
+        if (!image?.source?.data) return block
+        return {
+          ...block,
+          source: {
+            ...block.source,
+            ...image.source,
+          },
+        }
       }
+      if (block?.type === 'attachment' && block.attachment) {
+        const isImageAttachment = String(block.attachment.mimeType || block.attachment.media_type || '').startsWith('image/') || String(block.attachment.url || '').startsWith('data:image/')
+        const image = isImageAttachment ? matchedImages?.[imageIndex++] : null
+        const playback = matched?.[playbackIndex++]
+        return {
+          ...block,
+          attachment: {
+            ...block.attachment,
+            ...(image?.attachment || {}),
+            ...(playback?.playbackUrl ? {
+              playbackUrl: playback.playbackUrl,
+              durationSeconds: playback.durationSeconds || block.attachment.durationSeconds,
+            } : {}),
+          },
+        }
+      }
+      return block
     })
+
+    while (matchedImages && imageIndex < matchedImages.length && historyImageCount === 0) {
+      const image = matchedImages[imageIndex++]
+      if (image?.source?.data) {
+        nextContent.push({ type: 'image', source: { ...image.source } })
+      } else if (image?.attachment?.url || image?.attachment?.playbackUrl) {
+        nextContent.push({ type: 'attachment', attachment: { ...image.attachment } })
+      }
+    }
 
     return { ...message, content: nextContent }
   })
@@ -373,6 +464,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!gw.connected.value) return
     const msg = text.trim()
     if (!msg && (!atts || atts.length === 0)) return
+    const transcriptText = (atts || []).find(att => att?.transcriptText)?.transcriptText?.trim() || ''
 
     const userContent = []
     if (msg) userContent.push({ type: 'text', text: msg })
@@ -402,7 +494,7 @@ export const useChatStore = defineStore('chat', () => {
     }]
 
     const apiAttachments = atts && atts.length > 0
-      ? atts.map(att => {
+      ? atts.filter(att => !att.localOnly).map(att => {
           const base64Idx = att.dataUrl?.indexOf(';base64,')
           if (base64Idx == null || base64Idx < 5) return null
           const mime = att.dataUrl.slice(5, base64Idx) // skip "data:"
@@ -431,7 +523,7 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const sendParams = {
         sessionKey: currentSessionKey.value,
-        message: msg || (apiAttachments?.length ? '[voice message]' : ''),
+        message: msg || transcriptText || (apiAttachments?.length ? '[voice message]' : ''),
         deliver: false,
         idempotencyKey: newRunId,
       }
@@ -525,6 +617,7 @@ export const useChatStore = defineStore('chat', () => {
     if (normalized === thinkingLevel.value) return
     const previous = thinkingLevel.value
     thinkingLevel.value = normalized
+    error.value = null
     try {
       await gw.request('sessions.patch', {
         key: currentSessionKey.value,
@@ -532,6 +625,7 @@ export const useChatStore = defineStore('chat', () => {
       })
     } catch (e) {
       thinkingLevel.value = previous
+      error.value = e.message || String(e)
       console.error('[chat] failed to set thinking level:', e)
     }
   }

@@ -88,6 +88,7 @@
             {{ saving ? t('models.saving') : t('models.saveConfig') }}
           </button>
         </div>
+        <p v-if="saveError" class="save-error">{{ saveError }}</p>
       </div>
 
       <!-- Step 3: Done -->
@@ -126,29 +127,16 @@ import { useConfigStore } from '@/stores/config'
 import { useGatewayStore } from '@/stores/gateway'
 import { t } from '@/i18n'
 import { getModelIcon } from '@/lib/icons'
+import { ipc } from '@/lib/ipc'
+import { createModelPresets, createModelTagMap } from '@/lib/model-presets'
 
 const router = useRouter()
 const configStore = useConfigStore()
 const gatewayStore = useGatewayStore()
 
-const PRESETS = computed(() => [
-  { id: 'minimax', name: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-Text-01', tags: [t('models.tagRecommend'), t('models.tagDomestic')], link: 'https://platform.minimaxi.com/' },
-  { id: 'kimi', name: 'Kimi', baseUrl: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-auto', tags: [t('models.tagDomestic'), t('models.tagFast')], link: 'https://platform.moonshot.cn/' },
-  { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', tags: [t('models.tagDomestic'), t('models.tagCheap')], link: 'https://platform.deepseek.com/' },
-  { id: 'zai', name: 'GLM', baseUrl: '', model: 'glm-5', tags: [t('models.tagDomestic'), t('models.tagFree')], link: 'https://open.bigmodel.cn/', isZai: true },
-  { id: 'qwen', name: 'Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo', tags: [t('models.tagDomestic'), t('models.tagFree')], link: 'https://dashscope.console.aliyun.com/' },
-  { id: 'doubao', name: 'Doubao', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: 'doubao-1.5-pro-32k', tags: [t('models.tagDomestic'), t('models.tagFast')], link: 'https://console.volcengine.com/ark' },
-  { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', tags: [t('models.tagPowerful')], link: 'https://platform.openai.com/' },
-  { id: 'anthropic', name: 'Claude', baseUrl: 'https://api.anthropic.com/v1', model: 'claude-sonnet-4-20250514', tags: [t('models.tagPowerful')], link: 'https://console.anthropic.com/' },
-  { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', tags: [t('models.tagVeryFast'), t('models.tagFree')], link: 'https://console.groq.com/' },
-  { id: 'siliconflow', name: 'SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen2.5-72B-Instruct', tags: [t('models.tagDomestic'), t('models.tagCheap')], link: 'https://cloud.siliconflow.cn/' },
-  { id: 'custom', name: t('models.custom'), baseUrl: '', model: '', tags: [t('models.tagCompatible')], link: '', isCustom: true },
-])
+const PRESETS = computed(() => createModelPresets(t))
 
-const TAG_MAP = computed(() => ({
-  [t('models.tagRecommend')]: 'hot', [t('models.tagDomestic')]: 'cn', [t('models.tagFree')]: 'free',
-  [t('models.tagFast')]: 'fast', [t('models.tagVeryFast')]: 'fast', [t('models.tagCheap')]: 'cheap', [t('models.tagPowerful')]: 'hot',
-}))
+const TAG_MAP = computed(() => createModelTagMap(t))
 
 const step = ref(1)
 const selected = ref('')
@@ -166,6 +154,7 @@ const savedProvider = ref('')
 const savedBaseUrl = ref('')
 const savedApiKey = ref('')
 const saveLabel = ref('')
+const saveError = ref('')
 
 function tagClass(tag) { return TAG_MAP.value[tag] || '' }
 
@@ -207,47 +196,45 @@ async function handleSave() {
   }
 
   saving.value = true
+  saveError.value = ''
+  const apiType = p.id === 'anthropic' ? 'anthropic' : 'openai-completions'
+
+  let providerModels
+  try {
+    providerModels = await configStore.fetchProviderModelList(baseUrl, apiKey.value.trim(), apiType, p.id)
+  } catch (e) {
+    saving.value = false
+    saveError.value = e.message || '获取模型列表失败'
+    return
+  }
+  if (!providerModels.some(m => m.id === modelId)) {
+    modelId = providerModels[0].id
+  }
   saveLabel.value = `${p.name} · ${modelId}`
 
-  // Fetch model list from provider (skip for zai)
-  let providerModels = null
-  if (!p.isZai && baseUrl) {
-    try {
-      const res = await window.clawshell.fetchProviderModels(baseUrl, apiKey.value.trim())
-      if (res?.data && Array.isArray(res.data)) {
-        providerModels = res.data
-          .map(m => m.id)
-          .filter(Boolean)
-          .slice(0, 50)
-          .map(id => ({
-            id,
-            name: id,
-            reasoning: false,
-            input: ['text'],
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 128000,
-            maxTokens: 8192,
-          }))
-      }
-    } catch {}
-  }
-
-  const result = await configStore.saveModelConfig(p.id, baseUrl, modelId, apiKey.value.trim(), providerModels)
+  const result = await configStore.saveModelConfig(p.id, baseUrl, modelId, apiKey.value.trim(), providerModels, apiType)
   saving.value = false
 
-  if (result.ok) {
-    // If user checked "set as primary", update it
-    if (setAsPrimary.value && hasExistingPrimary.value) {
-      const primary = p.isZai ? 'zai/' + modelId : p.id + '/' + modelId
-      await configStore.setPrimaryModel(primary)
-    }
-
-    savedProvider.value = p.id
-    savedBaseUrl.value = baseUrl
-    savedApiKey.value = apiKey.value.trim()
-    testResult.value = null
-    step.value = 3
+  if (!result.ok) {
+    saveError.value = result.error || '保存失败'
+    return
   }
+
+  // If user checked "set as primary", update it
+  if (setAsPrimary.value && hasExistingPrimary.value) {
+    const primary = p.isZai ? 'zai/' + modelId : p.id + '/' + modelId
+    const primaryResult = await configStore.setPrimaryModel(primary)
+    if (!primaryResult.ok) {
+      saveError.value = primaryResult.error || '保存默认模型失败'
+      return
+    }
+  }
+
+  savedProvider.value = p.id
+  savedBaseUrl.value = baseUrl
+  savedApiKey.value = apiKey.value.trim()
+  testResult.value = null
+  step.value = 3
 }
 
 function goChat() {
@@ -258,7 +245,7 @@ async function handleRestart() {
   gatewayStore.restarting = true
   restartDone.value = true
   try {
-    await window.clawshell.restartGateway()
+    await ipc.restartGateway()
   } catch {
     gatewayStore.restarting = false
   }
@@ -271,15 +258,16 @@ async function handleTest() {
   const baseUrl = savedBaseUrl.value
   const apiKeyVal = savedApiKey.value
 
-  if (p.isZai || !baseUrl) {
-    testResult.value = { ok: true, models: [p.model || 'zai model'], error: '' }
+  if (!baseUrl) {
+    testResult.value = { ok: false, models: [], error: 'Missing model list base URL' }
     return
   }
 
   testing.value = true
   testResult.value = null
   try {
-    const res = await window.clawshell.fetchProviderModels(baseUrl, apiKeyVal)
+    const apiType = p.id === 'anthropic' ? 'anthropic' : 'openai-completions'
+    const res = await ipc.fetchProviderModels(baseUrl, apiKeyVal, apiType)
     if (res?.error) {
       testResult.value = { ok: false, models: [], error: t('models.connectFailed').replace('{error}', res.error) }
     } else if (res?.data && Array.isArray(res.data)) {
@@ -316,7 +304,7 @@ function detectApiKey() {
   const p = activePreset.value
   if (!p) return
   if (p.isZai) {
-    apiKey.value = cfg.env?.ZAI_API_KEY || ''
+    apiKey.value = cfg.models?.providers?.[p.id]?.apiKey || cfg.env?.ZAI_API_KEY || ''
   } else {
     apiKey.value = cfg.models?.providers?.[p.id]?.apiKey || ''
   }
@@ -539,6 +527,13 @@ input:focus { border-color: var(--color-primary); }
   color: var(--color-text-tertiary);
   font-size: var(--font-size-xs);
   margin-top: 6px;
+}
+
+.save-error {
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  margin-top: 10px;
+  text-align: right;
 }
 
 .checkbox-label {
