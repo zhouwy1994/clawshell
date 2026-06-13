@@ -38,6 +38,8 @@ jobs:
 
       - name: Download portable runtimes
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # 从 nodejs.org 获取最新 LTS 版本号（lts 字段为字符串的是 LTS，false 的是 Current）
           NODE_VER=$(curl -sL https://nodejs.org/dist/index.json \
@@ -78,9 +80,16 @@ jobs:
           import urllib.request
 
           target = os.environ["PYTHON_TARGET"]
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "clawshell-release-workflow",
+          }
+          token = os.environ.get("GITHUB_TOKEN")
+          if token:
+              headers["Authorization"] = f"Bearer {token}"
           req = urllib.request.Request(
               "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest",
-              headers={"Accept": "application/vnd.github+json"},
+              headers=headers,
           )
           with urllib.request.urlopen(req, timeout=30) as res:
               release = json.load(res)
@@ -113,14 +122,21 @@ jobs:
           curl -sL "$PYTHON_URL" -o /tmp/python.tar.gz
           mkdir -p /tmp/python-out
           tar xzf /tmp/python.tar.gz -C /tmp/python-out
-          PYTHON_BIN=$(find /tmp/python-out -type f \( -name python.exe -o -name python3 -o -name python \) | head -n 1)
-          if [ -z "$PYTHON_BIN" ]; then
-            echo "ERROR: Extracted Python runtime does not contain a python executable"
-            exit 1
+          PYTHON_ROOT=/tmp/python-out/python
+          if [ ! -d "$PYTHON_ROOT" ]; then
+            PYTHON_BIN=$(find /tmp/python-out \( -type f -o -type l \) \( -name python.exe -o -name python3 -o -name python \) | head -n 1)
+            if [ -z "$PYTHON_BIN" ]; then
+              echo "ERROR: Extracted Python runtime does not contain a python executable"
+              exit 1
+            fi
+            PYTHON_ROOT=$(dirname "$PYTHON_BIN")
+            if [ "$(basename "$PYTHON_ROOT")" = "bin" ]; then
+              PYTHON_ROOT=$(dirname "$PYTHON_ROOT")
+            fi
           fi
-          PYTHON_ROOT=$(dirname "$PYTHON_BIN")
-          if [ "$(basename "$PYTHON_ROOT")" = "bin" ]; then
-            PYTHON_ROOT=$(dirname "$PYTHON_ROOT")
+          if [ ! -d "$PYTHON_ROOT" ]; then
+            echo "ERROR: Unable to resolve extracted Python runtime root"
+            exit 1
           fi
           mv "$PYTHON_ROOT" resources/runtime/python
 

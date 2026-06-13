@@ -2,35 +2,35 @@
 
 ## v1.0.3 - 2026-06-13
 
-### Overview
+### 概览
 
-v1.0.3 focuses on three areas:
+v1.0.3 这一版主要集中在三件事上：
 
-- immersive voice interaction
-- stronger local runtime and tool capabilities
-- stability fixes for models, proxying, and skills
+- 沉浸式语音交互
+- 更完整的本地运行时与工具能力
+- 模型、代理、技能相关的稳定性修复
 
-### Added
+### 新增
 
-- Added immersive voice mode with a dedicated entry and updated interaction flow
-- Switched dialog speech recognition to ASR real-time recognition
-- Added user emotion recognition during voice interaction
-- Added role-based assistant persona setup
-- Added bundled Python runtime for local execution
-- Added online download support for tool packages in Settings
-- Added bundled commonly used skills and built-in weather query skill
+- 新增沉浸式语音模式，提供独立入口并重做交互流程
+- 对话语音识别切换为 ASR 实时识别
+- 新增语音交互过程中的用户情绪识别
+- 新增基于角色的助手人设配置
+- 新增内置 Python 运行时，增强本地执行能力
+- 设置页新增工具包在线下载能力
+- 内置常用技能，并补充天气查询技能
 
-### Improved
+### 改进
 
-- Improved immersive voice entry styling and in-session feedback
-- Improved assistant identity and workspace bootstrap content generation
-- Expanded the built-in model/channel options in model configuration
-- Tuned ASR VAD threshold and sentence segmentation to reduce noise-triggered recognition
+- 优化沉浸式语音入口样式和会话内反馈
+- 优化助手身份与工作区初始化内容生成
+- 扩充模型配置中的内置模型与渠道选项
+- 调整 ASR 的 VAD 阈值与分句策略，减少噪声误触发
 
-### Fixed
+### 修复
 
-- Fixed proxy settings not taking effect for main-process requests
-- Fixed HTTPS model list requests failing when routed through a proxy
-- Fixed model configuration failing to fetch provider model lists
-- Fixed installed built-in skills not being written to and enabled in config
-- Fixed chat markdown file rendering issues
+- 修复主进程请求未正确使用代理配置的问题
+- 修复 HTTPS 模型列表请求在代理场景下失败的问题
+- 修复模型配置中无法获取供应商模型列表的问题
+- 修复已安装内置技能未写入配置并自动启用的问题
+- 修复聊天中 Markdown 文件渲染异常的问题
