@@ -92,7 +92,7 @@ jobs:
               version_match = re.match(r"^cpython-(\d+)\.(\d+)\.(\d+)([A-Za-z].*)?\+", name)
               if (
                   version_match
-                  target in name
+                  and target in name
                   and "install_only" in name
                   and "freethreaded" not in name
                   and "debug" not in name
@@ -151,6 +151,8 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -160,7 +162,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: ClawShell ${{ github.ref_name }}
-          body: |
-            ClawShell ${{ github.ref_name }} release.
+          body_path: CHANGELOG.md
           files: |
             artifacts/**/*
