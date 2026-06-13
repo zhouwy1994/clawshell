@@ -60,11 +60,11 @@ ClawShell（虾壳）是一款基于 [OpenClaw](https://www.npmjs.com/package/op
   </tr>
   <tr>
     <td align="center"><b>智能对话</b></td>
-    <td align="center"><b>模型配置</b></td>
+    <td align="center"><b>沉浸模式</b></td>
   </tr>
   <tr>
     <td><img src="assets/images/readme/chat.png" alt="Chat" width="480" /></td>
-    <td><img src="assets/images/readme/models.png" alt="Models" width="480" /></td>
+    <td><img src="assets/images/readme/immersive_mode.png" alt="Models" width="480" /></td>
   </tr>
   <tr>
     <td align="center"><b>助手管理</b></td>
@@ -212,11 +212,11 @@ ClawShell is a desktop AI assistant client built on the [OpenClaw](https://www.n
   </tr>
   <tr>
     <td align="center"><b>Chat</b></td>
-    <td align="center"><b>Models</b></td>
+    <td align="center"><b>Immersive</b></td>
   </tr>
   <tr>
     <td><img src="assets/images/readme/chat_en.png" alt="Chat" width="480" /></td>
-    <td><img src="assets/images/readme/models_en.png" alt="Models" width="480" /></td>
+    <td><img src="assets/images/readme/immersive_mode.png" alt="Models" width="480" /></td>
   </tr>
   <tr>
     <td align="center"><b>Assistants</b></td>
